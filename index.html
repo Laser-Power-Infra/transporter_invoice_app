@@ -26,6 +26,37 @@
     </div>
   </div>
 
+  <!-- Beautiful Premium Login Screen -->
+  <div id="login-screen" class="login-screen" style="display: none;">
+    <div class="login-card">
+      <div class="login-header">
+        <img src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png" alt="Laser Power & Infra Logo" class="login-logo">
+        <h1 class="login-title">Laser Power & Infra</h1>
+        <p class="login-subtitle">Ledger Analytics & Reconciliation Portal</p>
+      </div>
+      <form id="login-form">
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+          <label for="login-username" style="font-size: 0.775rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">User ID</label>
+          <input type="text" id="login-username" class="form-control" placeholder="Enter your User ID" required autocomplete="username">
+        </div>
+        <div class="form-group" style="margin-top: 16px; display: flex; flex-direction: column; gap: 6px;">
+          <label for="login-password" style="font-size: 0.775rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Password</label>
+          <div style="position: relative; width: 100%;">
+            <input type="password" id="login-password" class="form-control" placeholder="Enter your Password" required autocomplete="current-password" style="padding-right: 40px;">
+            <button type="button" id="toggle-password-btn" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; display: flex; align-items: center; justify-content: center;">
+              <i data-lucide="eye" id="toggle-password-icon" style="width: 18px; height: 18px; pointer-events: none;"></i>
+            </button>
+          </div>
+        </div>
+        <div class="login-error-msg" id="login-error-msg" style="display: none;"></div>
+        <button type="submit" class="btn btn-primary login-btn" style="margin-top: 24px; width: 100%;">
+          <span>Sign In</span>
+          <i data-lucide="log-in" style="width: 16px; height: 16px;"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+
   <div class="app-container">
     <!-- Sidebar Navigation -->
     <aside class="sidebar">
@@ -75,10 +106,15 @@
             <span id="last-sync-time">Just now</span>
           </div>
         </div>
-        <button class="btn btn-icon-only btn-secondary" id="theme-toggle-btn" title="Toggle Theme">
-          <i data-lucide="sun" class="sun-icon"></i>
-          <i data-lucide="moon" class="moon-icon"></i>
-        </button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-icon-only btn-secondary" id="theme-toggle-btn" title="Toggle Theme">
+            <i data-lucide="sun" class="sun-icon"></i>
+            <i data-lucide="moon" class="moon-icon"></i>
+          </button>
+          <button class="btn btn-icon-only btn-danger" id="logout-btn" title="Log Out" style="background-color: var(--accent-red-glow); color: var(--accent-red); border-color: rgba(255, 77, 109, 0.2); cursor: pointer;">
+            <i data-lucide="log-out"></i>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -660,7 +696,7 @@ function doPost(e) {
             <!-- Left Pane: Physical Invoice Details (parsed from stringified array) -->
             <div class="detail-pane flex-1">
               <div class="pane-header flex-row justify-between align-center">
-                <h3><i data-lucide="file-text"></i> Invoice Details (Sales Ledger)</h3>
+                <h3><i data-lucide="file-text"></i> Invoice Details </h3>
                 <button class="btn btn-secondary btn-xs" id="edit-invoice-pane-btn">
                   <i data-lucide="edit-3"></i> <span>Edit</span>
                 </button>
@@ -718,7 +754,7 @@ function doPost(e) {
             <!-- Right Pane: Purchase Entry Details (matched from purchases array) -->
             <div class="detail-pane flex-1 border-left pl-4">
               <div class="pane-header flex-row justify-between align-center">
-                <h3><i data-lucide="shopping-bag"></i> Purchase Book Entry</h3>
+                <h3><i data-lucide="shopping-bag"></i> Book Entry</h3>
                 <button class="btn btn-secondary btn-xs" id="edit-purchase-pane-btn">
                   <i data-lucide="edit-3"></i> <span>Edit</span>
                 </button>

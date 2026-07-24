@@ -20,6 +20,11 @@ let state = {
 
 const SERVER_BASE_URL = import.meta.env.VITE_SERVER_BASE_URL || `http://${window.location.hostname}:4000`;
 
+// Authentication Constants (Static Credentials)
+const STATIC_USER_ID = "admin";
+const STATIC_PASSWORD = "laserpower@123";
+const SESSION_DURATION = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
+
 // Charts variables
 let amountChart = null;
 let freightChart = null;
@@ -30,6 +35,107 @@ let freightChart = null;
 document.addEventListener('DOMContentLoaded', () => {
   initApp();
 });
+
+function checkAuth() {
+  const session = localStorage.getItem('auth_session');
+  const appContainer = document.querySelector('.app-container');
+  const loginScreen = document.getElementById('login-screen');
+  
+  if (session) {
+    try {
+      const sessionData = JSON.parse(session);
+      const now = Date.now();
+      if (now - sessionData.timestamp < SESSION_DURATION) {
+        // Valid session
+        appContainer.style.display = 'flex';
+        loginScreen.style.display = 'none';
+        return true;
+      }
+    } catch (err) {
+      console.error('Failed to parse auth session:', err);
+    }
+  }
+  
+  // Invalid or expired session
+  appContainer.style.display = 'none';
+  loginScreen.style.display = 'flex';
+  localStorage.removeItem('auth_session');
+  return false;
+}
+
+function initAuthActions() {
+  // Login form submit
+  const loginForm = document.getElementById('login-form');
+  if (loginForm) {
+    loginForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const usernameInput = document.getElementById('login-username');
+      const passwordInput = document.getElementById('login-password');
+      const errorMsg = document.getElementById('login-error-msg');
+      
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      
+      if (username === STATIC_USER_ID && password === STATIC_PASSWORD) {
+        errorMsg.style.display = 'none';
+        localStorage.setItem('auth_session', JSON.stringify({
+          username: username,
+          timestamp: Date.now()
+        }));
+        
+        // Show app container and hide login screen
+        const appContainer = document.querySelector('.app-container');
+        const loginScreen = document.getElementById('login-screen');
+        appContainer.style.display = 'flex';
+        loginScreen.style.display = 'none';
+        
+        // Sync API and render dashboard views
+        syncWithAPI(false);
+        renderAllViews();
+        showToast('Login successful! Welcome back.', 'success');
+        
+        // Clear inputs
+        usernameInput.value = '';
+        passwordInput.value = '';
+      } else {
+        errorMsg.textContent = 'Invalid User ID or Password';
+        errorMsg.style.display = 'block';
+        showToast('Login failed. Check details and try again.', 'error');
+      }
+    });
+  }
+  
+  // Logout button
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      if (confirm('Are you sure you want to log out?')) {
+        localStorage.removeItem('auth_session');
+        checkAuth();
+        showToast('Logged out successfully.', 'info');
+      }
+    });
+  }
+  
+  // Toggle password visibility
+  const togglePasswordBtn = document.getElementById('toggle-password-btn');
+  if (togglePasswordBtn) {
+    togglePasswordBtn.addEventListener('click', () => {
+      const passwordInput = document.getElementById('login-password');
+      const togglePasswordIcon = document.getElementById('toggle-password-icon');
+      if (passwordInput && togglePasswordIcon) {
+        if (passwordInput.type === 'password') {
+          passwordInput.type = 'text';
+          togglePasswordIcon.setAttribute('data-lucide', 'eye-off');
+        } else {
+          passwordInput.type = 'password';
+          togglePasswordIcon.setAttribute('data-lucide', 'eye');
+        }
+        lucide.createIcons();
+      }
+    });
+  }
+}
 
 function initApp() {
   state.theme = localStorage.getItem('app_theme') || 'light';
@@ -54,13 +160,17 @@ function initApp() {
   initModalActions();
   initAddRecordActions();
   initDetailModalTabs();
-  
-  // Always try to fetch fresh data from server in background
-  syncWithAPI(false);
+  initAuthActions(); // Setup login and logout actions
 
-  // Render components
-  renderAllViews();
-  
+  // Check auth and conditionally fetch / render
+  const isAuthed = checkAuth();
+  if (isAuthed) {
+    // Always try to fetch fresh data from server in background
+    syncWithAPI(false);
+    // Render components
+    renderAllViews();
+  }
+
   // Render Lucide icons
   lucide.createIcons();
 
