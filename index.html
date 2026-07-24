@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice & Purchase Reconciliation Dashboard</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="/styles.css">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="light-theme">
+  <!-- Beautiful Splash/Loading Screen -->
+  <div id="page-splash-screen" class="splash-screen">
+    <div class="splash-content">
+      <img src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png" alt="Laser Power & Infra Logo" class="splash-logo">
+      <h1 class="splash-title">Laser Power & Infra</h1>
+      <p class="splash-subtitle">Ledger Analytics & Auditing Dashboard</p>
+      <div class="splash-spinner"></div>
+    </div>
+  </div>
+
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-logo">
+          <img src="https://laserpowerinfra.com/wp-content/uploads/2025/09/lpi-logo.png" alt="LPI Logo" class="brand-logo-img">
+        </div>
+        <div class="brand-info">
+          <!-- <h2>Laser Power & Infra Ltd.  </h2>
+          <span>Ledger Analytics</span> -->
+        </div>
+      </div>
+      
+      <nav class="sidebar-menu">
+        <a href="#" class="menu-item active" data-tab="dashboard">
+          <i data-lucide="layout-dashboard"></i>
+          <span>Dashboard</span>
+        </a>
+        <a href="#" class="menu-item" data-tab="invoices">
+          <i data-lucide="file-text"></i>
+          <span>Invoice Ledger</span>
+        </a>
+        <a href="#" class="menu-item" data-tab="purchases">
+          <i data-lucide="shopping-bag"></i>
+          <span>Purchase Ledger</span>
+        </a>
+        <a href="#" class="menu-item" data-tab="reconciliation">
+          <i data-lucide="refresh-cw"></i>
+          <span>Reconciliation</span>
+          <span class="badge badge-warning" id="discrepancy-count-badge">0</span>
+        </a>
+        <a href="#" class="menu-item" data-tab="uploads">
+          <i data-lucide="upload-cloud"></i>
+          <span>Upload Center</span>
+        </a>
+        <a href="#" class="menu-item" data-tab="settings">
+          <i data-lucide="settings"></i>
+          <span>Settings</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sync-status">
+          <div class="status-indicator online"></div>
+          <div class="status-details">
+            <p>Sync Active</p>
+            <span id="last-sync-time">Just now</span>
+          </div>
+        </div>
+        <button class="btn btn-icon-only btn-secondary" id="theme-toggle-btn" title="Toggle Theme">
+          <i data-lucide="sun" class="sun-icon"></i>
+          <i data-lucide="moon" class="moon-icon"></i>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top header bar -->
+      <header class="top-header">
+        <div class="header-search">
+          <i data-lucide="search"></i>
+          <input type="text" id="global-search-input" placeholder="Search across all records...">
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-secondary" id="sync-data-btn">
+            <i data-lucide="rotate-cw"></i>
+            <span>Fetch Live Data</span>
+          </button>
+          <button class="btn btn-primary" id="add-record-btn">
+            <i data-lucide="plus"></i>
+            <span>Add Record</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Dashboard View -->
+      <section id="tab-dashboard" class="tab-content active">
+        <div class="dashboard-header">
+          <div>
+            <h1>Dashboard Overview</h1>
+            <p class="subtitle">Real-time ledger analytics & discrepancy reports</p>
+          </div>
+          <div class="date-selector">
+            <i data-lucide="calendar"></i>
+            <span>Fiscal Year 2026-27</span>
+          </div>
+        </div>
+
+        <!-- KPI Grid -->
+        <div class="kpi-grid">
+          <div class="kpi-card purple-glow">
+            <div class="kpi-card-header">
+              <span>Total Invoice Amount</span>
+              <div class="kpi-icon"><i data-lucide="arrow-up-right"></i></div>
+            </div>
+            <div class="kpi-card-value" id="kpi-total-invoice-amount">₹0.00</div>
+            <div class="kpi-card-footer">
+              <span class="text-muted" id="kpi-invoice-count">0 Invoices</span>
+            </div>
+          </div>
+          <div class="kpi-card blue-glow">
+            <div class="kpi-card-header">
+              <span>Total Purchase Amount</span>
+              <div class="kpi-icon"><i data-lucide="arrow-down-left"></i></div>
+            </div>
+            <div class="kpi-card-value" id="kpi-total-purchase-amount">₹0.00</div>
+            <div class="kpi-card-footer">
+              <span class="text-muted" id="kpi-purchase-count">0 Purchases</span>
+            </div>
+          </div>
+          <div class="kpi-card orange-glow">
+            <div class="kpi-card-header">
+              <span>Pending RCM Liabilities</span>
+              <div class="kpi-icon"><i data-lucide="shield-alert"></i></div>
+            </div>
+            <div class="kpi-card-value" id="kpi-total-rcm">₹0.00</div>
+            <div class="kpi-card-footer">
+              <span class="text-muted">Calculated on Taxable Base</span>
+            </div>
+          </div>
+          <div class="kpi-card green-glow">
+            <div class="kpi-card-header">
+              <span>Reconciliation Rate</span>
+              <div class="kpi-icon"><i data-lucide="check-circle2"></i></div>
+            </div>
+            <div class="kpi-card-value" id="kpi-reconciliation-rate">0%</div>
+            <div class="kpi-card-footer">
+              <span class="text-success" id="kpi-reconciliation-status">0 / 0 Reconciled</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="dashboard-charts-grid">
+          <div class="chart-container card">
+            <div class="card-header">
+              <h3>Invoice vs Purchase Amount Comparison</h3>
+              <p class="text-muted">Grouped by Invoice Number</p>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="amountComparisonChart"></canvas>
+            </div>
+          </div>
+          
+          <div class="chart-container card">
+            <div class="card-header">
+              <h3>Freight Charge Distribution</h3>
+              <p class="text-muted">Breakdown by Logistics Partner</p>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="freightDistributionChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Discrepancies Table -->
+        <div class="card recent-discrepancies-card">
+          <div class="card-header flex-header">
+            <div>
+              <h3>Ledger Reconciliation Warnings</h3>
+              <p class="text-muted">Mismatched fields detected between Purchase Book and Sales Invoices</p>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="view-all-reconciliations-btn">View All</button>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Party Name</th>
+                  <th>Invoice Value</th>
+                  <th>Purchase Value</th>
+                  <th>Discrepancy Description</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="dashboard-discrepancies-list">
+                <tr>
+                  <td colspan="6" class="text-center">No reconciliation issues detected. All ledgers are balanced.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Invoices View -->
+      <section id="tab-invoices" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Invoice Ledger</h1>
+            <p class="text-muted">Manage, edit, and audit billing invoice entries</p>
+          </div>
+        </div>
+
+        <!-- Filters Box -->
+        <div class="filters-box card">
+          <div class="filters-grid">
+            <div class="filter-item">
+              <label for="inv-filter-search">Invoice No / Party</label>
+              <input type="text" id="inv-filter-search" placeholder="Search...">
+            </div>
+            <div class="filter-item">
+              <label for="inv-filter-party">Party Name</label>
+              <select id="inv-filter-party">
+                <option value="">All Parties</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label for="inv-filter-vehicle">Vehicle Number</label>
+              <select id="inv-filter-vehicle">
+                <option value="">All Vehicles</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label for="inv-filter-division">Division</label>
+              <select id="inv-filter-division">
+                <option value="">All Divisions</option>
+              </select>
+            </div>
+          </div>
+          <div class="filters-footer">
+            <span class="results-count" id="invoice-results-count">Showing 0 records</span>
+            <button class="btn btn-secondary btn-sm" id="clear-inv-filters">Reset Filters</button>
+          </div>
+        </div>
+
+        <!-- Invoices Table -->
+        <div class="card table-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Invoice Date</th>
+                  <th>Party Name</th>
+                  <th>Vehicle No</th>
+                  <th>Buyer Name</th>
+                  <th>Bill/Freight Value</th>
+                  <th>Net Payable</th>
+                  <th>RCM</th>
+                  <th>Series</th>
+                  <th>Division</th>
+                  <th>CGST</th>
+                  <th>SGST</th>
+                  <th>IGST</th>
+                  <th>GST Code</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="invoices-table-body">
+                <!-- Invoices loaded here -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Purchases View -->
+      <section id="tab-purchases" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Purchase Ledger</h1>
+            <p class="text-muted">Manage, edit, and audit purchase books and expense accounts</p>
+          </div>
+        </div>
+
+        <!-- Filters Box -->
+        <div class="filters-box card">
+          <div class="filters-grid">
+            <div class="filter-item">
+              <label for="pur-filter-search">Invoice No / Party</label>
+              <input type="text" id="pur-filter-search" placeholder="Search...">
+            </div>
+            <div class="filter-item">
+              <label for="pur-filter-party">Party Name</label>
+              <select id="pur-filter-party">
+                <option value="">All Parties</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label for="pur-filter-expense">Expense Account</label>
+              <select id="pur-filter-expense">
+                <option value="">All Accounts</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label for="pur-filter-division">Division</label>
+              <select id="pur-filter-division">
+                <option value="">All Divisions</option>
+              </select>
+            </div>
+          </div>
+          <div class="filters-footer">
+            <span class="results-count" id="purchase-results-count">Showing 0 records</span>
+            <button class="btn btn-secondary btn-sm" id="clear-pur-filters">Reset Filters</button>
+          </div>
+        </div>
+
+        <!-- Purchases Table -->
+        <div class="card table-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Inv No</th>
+                  <th>Inv Date</th>
+                  <th>Party Name</th>
+                  <th>Expense Account</th>
+                  <th>Expense Code</th>
+                  <th>Sub Code</th>
+                  <th>Service Code</th>
+                  <th>SAC</th>
+                  <th>Bill Freight</th>
+                  <!-- <th>Taxable Value</th> -->
+                  <th>Net Payable</th>
+                  <th>Total Inv Value</th>
+                  <th>Series</th>
+                  <th>Division</th>
+                  <th>RCM</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="purchases-table-body">
+                <!-- Purchases loaded here -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Reconciliation View -->
+      <section id="tab-reconciliation" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Ledger Reconciliation Matrix</h1>
+            <p class="text-muted">Automatic matching and discrepancy verification of transaction ledgers</p>
+          </div>
+          <div class="flex-row gap-2">
+            <button class="btn btn-secondary" id="export-reconciliation-btn">
+              <i data-lucide="download"></i>
+              <span>Export CSV</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Reconciliation Dashboard Card -->
+        <div class="reconciliation-summary-banner card">
+          <div class="summary-metric">
+            <span id="recon-summary-total">0</span>
+            <label>Total Unique Invoices</label>
+          </div>
+          <div class="summary-metric text-success">
+            <span id="recon-summary-matched">0</span>
+            <label>Perfect Matches</label>
+          </div>
+          <div class="summary-metric text-warning">
+            <span id="recon-summary-discrepancies">0</span>
+            <label>Discrepancies Found</label>
+          </div>
+          <div class="summary-metric text-danger">
+            <span id="recon-summary-orphan">0</span>
+            <label>Orphan Ledger Items</label>
+          </div>
+        </div>
+
+        <div class="recon-filters card">
+          <div class="flex-row justify-between align-center flex-wrap gap-2">
+            <div class="flex-row gap-2">
+              <button class="btn btn-secondary btn-sm active" id="btn-recon-all">All (0)</button>
+              <button class="btn btn-secondary btn-sm" id="btn-recon-matched">Matched (0)</button>
+              <button class="btn btn-secondary btn-sm" id="btn-recon-mismatch">Mismatched (0)</button>
+              <button class="btn btn-secondary btn-sm" id="btn-recon-orphan">Orphan Items (0)</button>
+            </div>
+            <div class="search-box-recon">
+              <input type="text" id="recon-search-input" placeholder="Search Invoices...">
+            </div>
+          </div>
+        </div>
+
+        <!-- Reconciliation Table -->
+        <div class="card table-card">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Party Name</th>
+                  <th>ERP Total Value</th>
+                  <th>Invoice Net</th>
+                  <th>Purchase Net</th>
+                  <th>Difference</th>
+                  <th>TDS Match</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="reconciliation-table-body">
+                <!-- Loaded Dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Upload Center View -->
+      <section id="tab-uploads" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Upload Center</h1>
+            <p class="text-muted">Upload and attach transaction PDFs directly to your Google Drive folder</p>
+          </div>
+          <div class="date-selector">
+            <i data-lucide="folder"></i>
+            <a id="open-drive-folder-link" href="https://drive.google.com/drive/folders/1B1avpxpTDDd2cZh7MIs5EcATO_Ca-zPJ" target="_blank" style="color: var(--accent-purple); font-weight: 600;">Open Drive Folder ↗</a>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- File Upload Dropzone -->
+          <div class="card">
+            <div class="card-header">
+              <h3>Upload PDF Document</h3>
+              <p class="text-muted">Upload files directly to their respective Google Drive folders based on category.</p>
+            </div>
+            <div class="card-body">
+              <form id="global-pdf-upload-form" style="display: flex; flex-direction: column; gap: 16px;">
+
+                <div class="form-group">
+                  <label for="upload-bill-type">Bill Type *</label>
+                  <select id="upload-bill-type" name="bill_type" required class="form-control">
+                    <option value="interlock">Interlock Bill</option>
+                    <option value="purchase">Purchase Bill</option>
+                    <option value="sales">Sales Bill</option>
+                  </select>
+                </div>
+                
+                <div class="pdf-dropzone" id="pdf-upload-dropzone">
+                  <i data-lucide="upload-cloud" class="dropzone-icon"></i>
+                  <p>Drag and drop invoice PDF here or click to browse</p>
+                  <span>Supports PDF files up to 10MB</span>
+                  <input type="file" id="pdf-file-input" accept="application/pdf" style="display: none;">
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Upload Status & Logs -->
+          <div class="card">
+            <div class="card-header">
+              <h3>Active Upload Activity</h3>
+              <p class="text-muted">Real-time status of files sent to Google Drive</p>
+            </div>
+            <div class="card-body" style="padding-top: 0; display: flex; flex-direction: column; gap: 16px;">
+              <div class="upload-progress-container hidden" id="global-upload-progress-box">
+                <div class="flex-row justify-between align-center mb-1">
+                  <span class="text-main" id="progress-filename" style="font-weight: 600; font-size: 0.85rem;">invoice_SNPL0132.pdf</span>
+                  <span class="text-muted" id="progress-percentage" style="font-size: 0.85rem;">45%</span>
+                </div>
+                <div class="progress-bar-bg" style="width: 100%; height: 8px; background-color: var(--bg-darker); border-radius: 4px; overflow: hidden; margin-top: 4px;">
+                  <div class="progress-bar-fill" id="progress-bar-indicator" style="width: 45%; height: 100%; background-color: var(--accent-purple); transition: width 0.2s;"></div>
+                </div>
+              </div>
+              
+              <div class="upload-log-list" id="upload-log-list">
+                <div class="text-center text-muted py-4">No recent upload activity in this session.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-grid" style="margin-top: 20px;">
+          <div class="card">
+            <div class="card-header">
+              <h3>All Uploaded PDFs</h3>
+              <p class="text-muted">View and preview every PDF uploaded from this dashboard</p>
+            </div>
+            <div class="card-body" style="display: grid; gap: 16px;">
+              <div class="uploaded-pdfs-grid">
+                <div class="uploaded-pdfs-list" id="uploaded-pdfs-list"></div>
+                <div class="uploaded-pdf-preview" id="uploaded-pdf-preview"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <!-- Settings View -->
+      <section id="tab-settings" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Application Settings</h1>
+            <p class="text-muted">Manage API endpoint URLs, database state, and local persistence overrides</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- API Endpoints Configuration -->
+          <div class="card settings-card">
+            <div class="card-header">
+              <h3>Google Sheet API Connection</h3>
+              <p class="text-muted">Paste your Google Apps Script Web App URL below to sync live production data.</p>
+            </div>
+            <div class="card-body">
+              <div class="form-group">
+                <label for="settings-api-url">API Endpoint URL</label>
+                <textarea id="settings-api-url" rows="4" class="form-control" placeholder="https://script.googleusercontent.com/..."></textarea>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-primary" id="save-api-url-btn">Save API Configuration</button>
+                <button class="btn btn-secondary" id="reset-api-url-btn">Reset to Default</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Database Actions -->
+          <div class="card settings-card">
+            <div class="card-header">
+              <h3>State & Offline Management</h3>
+              <p class="text-muted">Inspect and reset the local client database storage.</p>
+            </div>
+            <div class="card-body">
+              <div class="status-summary card bg-darker mb-3">
+                <div class="flex-row justify-between py-1">
+                  <span>Invoice Records Stored:</span>
+                  <strong id="settings-invoice-count">0</strong>
+                </div>
+                <div class="flex-row justify-between py-1 border-top">
+                  <span>Purchase Records Stored:</span>
+                  <strong id="settings-purchase-count">0</strong>
+                </div>
+                <div class="flex-row justify-between py-1 border-top">
+                  <span>Data Source:</span>
+                  <strong id="settings-data-source">Fallback JSON</strong>
+                </div>
+              </div>
+              <div class="flex-row gap-2">
+                <button class="btn btn-danger" id="clear-local-cache-btn">Reset Client Database</button>
+                <button class="btn btn-secondary" id="download-json-backup-btn">Export Local JSON</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Google Apps Script Installation Card -->
+          <div class="card settings-card col-span-2" style="grid-column: span 2; margin-top: 24px;">
+            <div class="card-header">
+              <h3>Deploy Google Apps Script POST Upload Handler</h3>
+              <p class="text-muted">Append the following script to your Google Spreadsheet script editor to enable live PDF uploads to your Google Drive folder.</p>
+            </div>
+            <div class="card-body" style="display: flex; flex-direction: column; gap: 16px;">
+                <div class="form-group">
+                <label>Apps Script Integration Code</label>
+                <textarea id="apps-script-textarea" readonly rows="12" class="form-control" style="font-family: monospace; font-size: 0.775rem; background-color: var(--bg-darker); cursor: text;" onclick="this.select();">
+// Google Apps Script upload receiver for Code.gs
+const DRIVE_FOLDER_ID = "1B1avpxpTDDd2cZh7MIs5EcATO_Ca-zPJ";
+
+function doPost(e) {
+  try {
+    var postData = JSON.parse(e.postData.contents);
+    var filename = postData.filename;
+    var base64Data = postData.base64Data;
+    var invoiceNumber = postData.invoiceNumber || "UNKNOWN";
+    
+    // Parse the base64 content
+    var decodedBytes = Utilities.base64Decode(base64Data);
+    var blob = Utilities.newBlob(decodedBytes, "application/pdf", filename);
+    
+    // Find target folder and create file
+    var folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+    var file = folder.createFile(blob);
+    
+    // Set file sharing to public viewable
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileUrl = file.getUrl();
+    
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": true,
+      "fileUrl": fileUrl,
+      "filename": filename,
+      "message": "File successfully uploaded to Google Drive folder!"
+    })).setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": false,
+      "error": error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+                </textarea>
+              </div>
+              <p class="text-muted" style="font-size: 0.8rem; margin-top: 4px;">
+                💡 <strong>Instructions:</strong> Open your Google Spreadsheet, click <strong>Extensions &gt; Apps Script</strong>, paste the code at the bottom of <code>Code.gs</code>, save, click <strong>Deploy &gt; Manage Deployments</strong>, edit, choose <strong>New Version</strong>, ensure "Who has access" is set to <strong>"Anyone"</strong>, click deploy, and copy the new Web App URL back into settings.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Detail Viewer Overlay Modal -->
+  <div class="modal-overlay" id="detail-modal">
+    <div class="modal-container modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-area">
+          <span class="badge" id="modal-badge-status">Matched</span>
+          <h2 id="modal-title-invoice-no">Invoice Details</h2>
+          <p id="modal-subtitle-party-name">S.N.P. LOGISTICS</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div id="modal-wrong-bill-banner" class="badge badge-danger" style="display: none; padding: 6px 12px; font-size: 0.8rem; font-weight: 700; border-radius: 4px; border: 1px solid var(--accent-red); box-shadow: 0 0 8px var(--accent-red-glow); text-transform: uppercase; letter-spacing: 0.5px;">
+            ⚠️ WRONG BILL
+          </div>
+          <button class="btn-close-modal" id="btn-close-detail-modal">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <!-- Modal Tabs -->
+        <div class="form-tabs" style="margin-bottom: 20px;">
+          <button type="button" class="form-tab-btn active" data-detail-tab="split-view">Split Audit Ledger</button>
+          <button type="button" class="form-tab-btn" data-detail-tab="raw-json-view">Raw JSON Editor</button>
+        </div>
+
+        <!-- Split View Section -->
+        <div class="detail-tab-section active" id="detail-section-split-view">
+          <div class="detail-split-pane">
+            <!-- Left Pane: Physical Invoice Details (parsed from stringified array) -->
+            <div class="detail-pane flex-1">
+              <div class="pane-header flex-row justify-between align-center">
+                <h3><i data-lucide="file-text"></i> Invoice Details (Sales Ledger)</h3>
+                <button class="btn btn-secondary btn-xs" id="edit-invoice-pane-btn">
+                  <i data-lucide="edit-3"></i> <span>Edit</span>
+                </button>
+              </div>
+
+              <!-- Read Only Invoice Fields -->
+              <div id="invoice-details-view" class="details-form-grid">
+                <!-- Dynamically Populated -->
+              </div>
+
+              <!-- Edit Form Invoice Fields (Initially Hidden) -->
+              <form id="invoice-details-edit-form" class="details-form-grid hidden">
+                <!-- Dynamically Populated Inputs -->
+              </form>
+
+              <div class="mt-4">
+                <h4>Line Items / Shipments</h4>
+                <div class="table-responsive border rounded mt-2">
+                  <table class="data-table data-table-sm" id="modal-invoice-line-items-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Truck No</th>
+                        <th>FO No</th>
+                        <th>Description</th>
+                        <th>LR No</th>
+                        <th>Freight</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <!-- Populated dynamically -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="mt-4 border-top pt-3" id="modal-invoice-pdf-section">
+                <h4>Attached Invoice Receipt (Google Drive)</h4>
+                <div id="modal-pdf-attachment-status" class="mt-2">
+                  <!-- Dynamically populated: dropzone or attachment preview -->
+                </div>
+              </div>
+
+              <div class="mt-4 border-top pt-3" id="modal-ai-summary-section">
+                <h4 style="margin-bottom: 12px; font-weight: 600; font-size: 0.95rem; color: var(--text-main);">AI Validation Summary</h4>
+                <div id="modal-ai-summary-view">
+                  <!-- Dynamically populated -->
+                </div>
+                <div id="modal-ai-summary-edit-form" class="hidden">
+                  <!-- Dynamically populated edit textbox -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Pane: Purchase Entry Details (matched from purchases array) -->
+            <div class="detail-pane flex-1 border-left pl-4">
+              <div class="pane-header flex-row justify-between align-center">
+                <h3><i data-lucide="shopping-bag"></i> Purchase Book Entry</h3>
+                <button class="btn btn-secondary btn-xs" id="edit-purchase-pane-btn">
+                  <i data-lucide="edit-3"></i> <span>Edit</span>
+                </button>
+              </div>
+
+              <!-- Read Only Purchase Fields -->
+              <div id="purchase-details-view" class="details-form-grid">
+                <!-- Dynamically Populated -->
+              </div>
+
+              <!-- Edit Form Purchase Fields (Initially Hidden) -->
+              <form id="purchase-details-edit-form" class="details-form-grid hidden">
+                <!-- Dynamically Populated Inputs -->
+              </form>
+
+              <div class="mt-4 border-top pt-3" id="modal-purchase-pdf-section">
+                <h4>Attached Purchase Receipt (Google Drive)</h4>
+                <div id="modal-purchase-pdf-attachment-status" class="mt-2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Raw JSON Editor Section -->
+        <div class="detail-tab-section" id="detail-section-raw-json-view" style="display: none;">
+          <div class="raw-json-editor-pane">
+            <div class="flex-row justify-between align-center mb-3">
+              <h3 style="display: flex; align-items: center; gap: 8px;"><i data-lucide="code" style="color: var(--accent-purple);"></i> Raw JSON Database Overrides</h3>
+              <span class="badge badge-purple">Advanced Override</span>
+            </div>
+            <p class="text-muted mb-3" style="margin-bottom: 16px;">Directly overwrite the raw JSON fields of the matched Invoice and Purchase logs. Be careful to preserve JSON syntax format.</p>
+            
+            <div class="details-form-grid">
+              <div class="form-group col-span-2">
+                <label>Invoice JSON Data (Consolidated Shipment Group)</label>
+                <textarea id="modal-raw-invoice-json" rows="8" class="form-control" style="font-family: monospace; font-size: 0.8rem;"></textarea>
+              </div>
+              <div class="form-group col-span-2" style="margin-top: 16px;">
+                <label>Purchase JSON Data (Consolidated Booking Group)</label>
+                <textarea id="modal-raw-purchase-json" rows="8" class="form-control" style="font-family: monospace; font-size: 0.8rem;"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-actions-left">
+          <button class="btn btn-danger" id="delete-record-btn">
+            <i data-lucide="trash-2"></i> Delete Record
+          </button>
+        </div>
+        <div class="modal-actions-right">
+          <button class="btn btn-secondary" id="print-invoice-btn">
+            <i data-lucide="printer"></i> Print Invoice
+          </button>
+          <button class="btn btn-success" id="validate-bill-btn">
+            <i data-lucide="check-circle2"></i> Validate Bill
+          </button>
+          <button class="btn btn-secondary hidden" id="cancel-edit-btn">Cancel</button>
+          <button class="btn btn-success hidden" id="save-edited-records-btn">
+            <i data-lucide="check"></i> Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add New Record Modal -->
+  <div class="modal-overlay" id="add-record-modal">
+    <div class="modal-container">
+      <div class="modal-header">
+        <div class="modal-title-area">
+          <h2>Create New Record</h2>
+          <p>Add a new Invoice and corresponding Purchase entry manually</p>
+        </div>
+        <button class="btn-close-modal" id="btn-close-add-modal">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="add-record-form">
+          <div class="form-tabs">
+            <button type="button" class="form-tab-btn active" data-form-tab="invoice-section">Invoice Info</button>
+            <button type="button" class="form-tab-btn" data-form-tab="purchase-section">Purchase Info</button>
+          </div>
+
+          <!-- Add Invoice Fields -->
+          <div class="form-section active" id="form-section-invoice-section">
+            <div class="details-form-grid py-3">
+              <div class="form-group">
+                <label>Invoice Number *</label>
+                <input type="text" name="invoice_number" required placeholder="e.g. SNPL/0132/26-27">
+              </div>
+              <div class="form-group">
+                <label>Invoice Date</label>
+                <input type="date" name="invoice_date" value="2026-04-17">
+              </div>
+              <div class="form-group">
+                <label>Party/Transporter Name *</label>
+                <input type="text" name="party_name" required placeholder="e.g. S.N.P.LOGISTIC">
+              </div>
+              <div class="form-group">
+                <label>Company Name</label>
+                <input type="text" name="buyer_name" placeholder="e.g. LASER POWER & INFRA LIMITED">
+              </div>
+              <div class="form-group">
+                <label>Lorry Vehicle No</label>
+                <input type="text" name="lorry_vehicle_no" placeholder="e.g. WB11D7296">
+              </div>
+              <div class="form-group">
+                <label>Freight Value (₹)</label>
+                <input type="number" name="bill_freight_val" value="8000">
+              </div>
+              <div class="form-group">
+                <label>Net Payable (₹)</label>
+                <input type="number" name="net_payable" value="8080">
+              </div>
+              <div class="form-group">
+                <label>RCM Rate</label>
+                <select name="RCM">
+                  <option value="0.05">5%</option>
+                  <option value="0">0%</option>
+                  <option value="0.12">12%</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Add Purchase Fields -->
+          <div class="form-section" id="form-section-purchase-section">
+            <div class="details-form-grid py-3">
+              <div class="form-group">
+                <label>Nature of Transaction</label>
+                <input type="text" name="tnature" placeholder="e.g. Interlock transfer">
+              </div>
+              <div class="form-group">
+                <label>Expense Account Name</label>
+                <input type="text" name="expense_acc_name" placeholder="e.g. Raw Material">
+              </div>
+              <div class="form-group">
+                <label>Sub Account Name</label>
+                <input type="text" name="sub_acc_name" placeholder="e.g. LASER POWER & INFRA LIMITED">
+              </div>
+              <div class="form-group">
+                <label>Service Account Name</label>
+                <input type="text" name="service_acc_name" placeholder="e.g. GOODS TRANSPORT">
+              </div>
+              <div class="form-group">
+                <label>SAC Code</label>
+                <input type="text" name="sac_code" placeholder="e.g. SAC_996791">
+              </div>
+              <div class="form-group">
+                <label>Taxable Value (₹)</label>
+                <input type="number" name="taxable_value" value="8000">
+              </div>
+              <div class="form-group">
+                <label>TDS Percent</label>
+                <input type="number" name="tds_percent" step="any" value="0.01" placeholder="e.g. 0.01 for 1%">
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-add-record">Cancel</button>
+        <button class="btn btn-primary" id="btn-submit-add-record">Create Record</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Secure PDF Viewer Popup Modal -->
+  <div class="modal-overlay" id="pdf-viewer-modal" style="z-index: 9999;">
+    <div class="modal-container" style="max-width: 960px; width: 92vw; height: 88vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-radius: 12px; border: 1px solid var(--border-color); background: var(--bg-card); box-shadow: 0 20px 50px rgba(0,0,0,0.6);">
+      <div class="modal-header" style="padding: 14px 20px; background: var(--bg-darker); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <i data-lucide="file-text" style="color: var(--accent-red); width: 22px; height: 22px;"></i>
+          <div>
+            <h3 id="pdf-viewer-title" style="margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text-main);">PDF Document Preview</h3>
+            <span id="pdf-viewer-subtitle" style="font-size: 0.78rem; color: var(--text-muted);">Secure Embedded Viewer</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <a id="pdf-viewer-external-btn" href="#" target="_blank" class="btn btn-secondary btn-xs" style="display: inline-flex; align-items: center; gap: 4px;" title="Open in new window">
+            <i data-lucide="external-link" style="width: 13px; height: 13px;"></i> Open Tab
+          </a>
+          <button class="btn-close-modal" id="btn-close-pdf-viewer-modal" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px;">
+            <i data-lucide="x" style="width: 20px; height: 20px;"></i>
+          </button>
+        </div>
+      </div>
+      <div class="modal-body" style="flex: 1; padding: 0; background: var(--bg-darker); position: relative; overflow: hidden;" id="pdf-viewer-body">
+        <iframe id="pdf-viewer-iframe" src="about:blank" style="width: 100%; height: 100%; border: none; display: block;"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification System -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Main JS Logic -->
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
