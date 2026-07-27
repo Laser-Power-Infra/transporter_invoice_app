@@ -682,7 +682,7 @@ button, input, select, textarea {
 #tab-purchases td:nth-child(3),
 #tab-purchases td:nth-child(4),
 #tab-reconciliation td:nth-child(2),
-#modal-invoice-line-items-table td:nth-child(4) {
+#modal-invoice-line-items-table td:nth-child(5) {
   white-space: normal;
   min-width: 180px;
   max-width: 320px;
@@ -1033,6 +1033,8 @@ textarea.form-control {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  flex: 1;
+  min-width: 30% ; /* Prevents contents (like tables) from forcing expansion */
 }
 
 .pane-header {
@@ -1703,4 +1705,14 @@ textarea.form-control {
 .login-btn:hover {
   transform: translateY(-2px);
   filter: brightness(1.1);
+}
+
+.copyable-cell {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.copyable-cell:hover {
+  background-color: rgba(168, 85, 247, 0.1) !important;
+  color: var(--accent-purple) !important;
 }

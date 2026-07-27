@@ -688,6 +688,7 @@ function doPost(e) {
         <div class="form-tabs" style="margin-bottom: 20px;">
           <button type="button" class="form-tab-btn active" data-detail-tab="split-view">Split Audit Ledger</button>
           <button type="button" class="form-tab-btn" data-detail-tab="raw-json-view">Raw JSON Editor</button>
+          <button type="button" class="form-tab-btn" data-detail-tab="erp-rows-view">ERP Tagging & Booking</button>
         </div>
 
         <!-- Split View Section -->
@@ -719,6 +720,7 @@ function doPost(e) {
                     <thead>
                       <tr>
                         <th>Date</th>
+                        <th>Invoice No</th>
                         <th>Truck No</th>
                         <th>FO No</th>
                         <th>Description</th>
@@ -798,6 +800,11 @@ function doPost(e) {
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- ERP Tagging & Booking Rows Section -->
+        <div class="detail-tab-section" id="detail-section-erp-rows-view" style="display: none;">
+          <!-- Populated dynamically -->
         </div>
       </div>
       <div class="modal-footer">
