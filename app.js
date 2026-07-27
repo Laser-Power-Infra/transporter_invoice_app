@@ -1829,6 +1829,7 @@ function buildERPRowsView(invoice, purchase) {
     "SUB ACC": pur.sub_acc_name || inv.sub_acc_name || '-',
     "SUB ACC CODE": pur.sub_acc_code || inv.sub_acc_code || '-',
     "SERVICE CODE": pur.service_acc_code || inv.service_acc_code || '-',
+    "SERVICE NAME": pur.service_acc_name || inv.service_acc_name || '-',
     "PROJECT": coalescedProject,
     "PROJECT CODE": coalescedProjectCode,
     "DEPERMENT": coalescedDeparment,
