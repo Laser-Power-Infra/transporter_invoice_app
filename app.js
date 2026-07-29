@@ -148,10 +148,7 @@ function initApp() {
     document.body.classList.add('light-theme');
   }
 
-  // Load cached data first for instant display
-  loadLocalDatabase();
-
-  // Initialize UI components
+  // Initialize UI components first (no data needed)
   initTabs();
   initThemeToggle();
   initSettingsActions();
@@ -160,26 +157,77 @@ function initApp() {
   initModalActions();
   initAddRecordActions();
   initDetailModalTabs();
-  initAuthActions(); // Setup login and logout actions
+  initAuthActions();
 
-  // Check auth and conditionally fetch / render
+  // Check auth
   const isAuthed = checkAuth();
   if (isAuthed) {
-    // Always try to fetch fresh data from server in background
-    syncWithAPI(false);
-    // Render components
-    renderAllViews();
+    // Load metadata only (deleted invoices, uploaded PDFs)
+    state.deletedInvoices = JSON.parse(localStorage.getItem('db_deleted_invoices') || '[]');
+    state.uploadedPdfs = JSON.parse(localStorage.getItem('db_uploaded_pdfs') || '[]');
+
+    // Show loading indicator while fetching from server
+    const reconciliationTbody = document.getElementById('reconciliation-tbody');
+    if (reconciliationTbody) {
+      reconciliationTbody.innerHTML = `<tr><td colspan="12" class="text-center" style="padding:2rem;color:var(--text-muted);">⏳ Loading latest data from server...</td></tr>`;
+    }
+
+    // Fetch fresh data from server (always, on every load)
+    fetchAndRefresh();
   }
 
   // Render Lucide icons
   lucide.createIcons();
 
-  // Hide splash screen with a beautiful transition
+  // Hide splash screen
   const splash = document.getElementById('page-splash-screen');
   if (splash) {
     setTimeout(() => {
       splash.classList.add('fade-out');
-    }, 1200); // 1.2s delay for a beautiful experience
+    }, 1200);
+  }
+}
+
+// Fetch fresh data from server, update local cache, then re-render UI
+async function fetchAndRefresh() {
+  const statusIndicator = document.querySelector('.status-indicator');
+  const syncTimeLabel = document.getElementById('last-sync-time');
+
+  if (statusIndicator) statusIndicator.className = 'status-indicator syncing';
+  if (syncTimeLabel) syncTimeLabel.textContent = 'Syncing...';
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(`${SERVER_BASE_URL}/api/data?_=${Date.now()}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) throw new Error(`Server returned ${response.status}`);
+
+    const data = await response.json();
+
+    if (data && data.success) {
+      // Process fresh server data (source of truth)
+      processRawData(data);
+
+      // Update local cache with fresh data
+      saveToLocalStorage();
+
+      if (statusIndicator) statusIndicator.className = 'status-indicator online';
+      if (syncTimeLabel) syncTimeLabel.textContent = new Date().toLocaleTimeString();
+
+      // Re-render all views with fresh data
+      renderAllViews();
+    } else {
+      throw new Error('Server returned unsuccessful payload');
+    }
+  } catch (error) {
+    console.warn('Could not fetch fresh data from server:', error.message);
+    if (statusIndicator) statusIndicator.className = 'status-indicator offline';
+    if (syncTimeLabel) syncTimeLabel.textContent = 'Offline';
+    showToast('Server unreachable — showing empty state', 'warning');
+    renderAllViews();
   }
 }
 
@@ -277,6 +325,80 @@ function saveToLocalStorage() {
   localStorage.setItem('db_dashboard_stats', JSON.stringify(state.dashboardStats));
   localStorage.setItem('db_deleted_invoices', JSON.stringify(state.deletedInvoices));
   localStorage.setItem('db_uploaded_pdfs', JSON.stringify(state.uploadedPdfs));
+}
+
+// === LOCAL OVERRIDES SYSTEM ===
+// Stores manually-edited fields per record so they survive hard reloads + server syncs
+function saveLocalOverrides() {
+  const overrides = JSON.parse(localStorage.getItem('db_local_overrides') || '{}');
+  state.purchases.forEach(pur => {
+    if (!pur._manually_edited) return;
+    const key = `pur:${pur.party_inv_no}`;
+    overrides[key] = overrides[key] || {};
+    const fields = ['project','project_code','deparment','deperment_code','tax_critaria',
+      'tax_critaria_name','service_acc_name','service_acc_code','expense_acc_name','expense_acc_code',
+      'sub_acc_name','sub_acc_code','sac_code','series','div_code','addon_code_str','stax_code_str',
+      'rcm','tds_percent','st_charges','net_payable','taxable_value','bill_freight_val',
+      'total_invoice_value','ai_summary','validated','validation_timestamp','our_reg_addr'];
+    fields.forEach(f => { if (pur[f] !== undefined && pur[f] !== null && pur[f] !== '') overrides[key][f] = pur[f]; });
+  });
+  state.invoices.forEach(inv => {
+    if (!inv._manually_edited) return;
+    const key = `inv:${inv.invoice_number}`;
+    overrides[key] = overrides[key] || {};
+    const fields = ['buyer_name','transporter_name','transporter_gstin','to_place_name','item_name',
+      'party_reg_addr','our_reg_addr','service_acc_code','sac_code','cgst','sgst','igst',
+      'series','div_code','addon_code_str','stax_code_str','bill_freight_val','st_charges',
+      'net_payable','total_invoice_value','RCM','validated','validation_timestamp'];
+    fields.forEach(f => { if (inv[f] !== undefined && inv[f] !== null && inv[f] !== '') overrides[key][f] = inv[f]; });
+    
+    // Save line_items overrides as well
+    if (inv.line_items && Array.isArray(inv.line_items)) {
+      overrides[key].line_items = inv.line_items.map(li => {
+        const itemOverride = {};
+        const fieldsLi = ['date', 'truck_no', 'fo_no', 'description', 'lr_no', 'freight', '_manually_edited', 'cn_lr_no'];
+        fieldsLi.forEach(f => {
+          if (li[f] !== undefined) itemOverride[f] = li[f];
+        });
+        return itemOverride;
+      });
+    }
+  });
+  localStorage.setItem('db_local_overrides', JSON.stringify(overrides));
+}
+
+function applyLocalOverrides() {
+  const overrides = JSON.parse(localStorage.getItem('db_local_overrides') || '{}');
+  if (!Object.keys(overrides).length) return;
+  state.purchases = state.purchases.map(pur => {
+    const key = `pur:${pur.party_inv_no}`;
+    return overrides[key] ? { ...pur, ...overrides[key], _manually_edited: true } : pur;
+  });
+  state.invoices = state.invoices.map(inv => {
+    const key = `inv:${inv.invoice_number}`;
+    if (!overrides[key]) return inv;
+    const restored = { ...inv, ...overrides[key], _manually_edited: true };
+    // Restore line items overrides if saved
+    if (overrides[key].line_items && Array.isArray(overrides[key].line_items) && restored.line_items && Array.isArray(restored.line_items)) {
+      restored.line_items = restored.line_items.map((li, index) => {
+        const matchLi = overrides[key].line_items[index];
+        return matchLi ? { ...li, ...matchLi } : li;
+      });
+    }
+    return restored;
+  });
+}
+
+// Convert any date string (DD-MM-YYYY or DD/MM/YYYY) to ISO yyyy-MM-dd for date inputs
+function normalizeToISODate(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  // Already ISO: yyyy-MM-dd
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 10);
+  // DD-MM-YYYY or DD/MM/YYYY
+  const m = s.match(/^(\d{2})[\-\/](\d{2})[\-\/](\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return s.substring(0, 10);
 }
 
 function mergeUploadedPdfsFromRecords() {
@@ -413,6 +535,13 @@ function processRawData(data) {
     }
 
     const invoiceNumber = parsedArray.invoice_number || inv.invoice_number || inv.party_inv_no || inv.our_bill_no || '';
+    // Debug: log raw server data for BS260000786
+    if (invoiceNumber === 'BS260000786') {
+      console.log('=== DEBUG BS260000786 ===');
+      console.log('raw inv:', inv);
+      console.log('parsedArray:', parsedArray);
+      console.log('line_items from server:', parsedArray.line_items);
+    }
     const invoiceDate = parsedArray.invoice_date || inv.invoice_date || inv.party_inv_date || '';
     const partyName = inv.party_name || parsedArray.party_name || parsedArray.transporter_name || '';
     const billFreightVal = parseNumericValue(inv.bill_freight_val ?? parsedArray.bill_freight_val ?? 0);
@@ -446,7 +575,7 @@ function processRawData(data) {
     }
 
     return {
-      id: `inv-${idx}-${Date.now()}`,
+      id: `inv-${(invoiceNumber || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}`,
       invoice_number: invoiceNumber,
       invoice_date: invoiceDate ? invoiceDate.split('T')[0] : '',
       party_name: partyName,
@@ -495,9 +624,19 @@ function processRawData(data) {
       project: inv.project || '',
       project_code: inv.project_code || '',
       deparment: inv.deparment || inv.department || '',
-      deperment_code: inv.deperment_code || inv.department_code || ''
+      deperment_code: inv.deperment_code || inv.department_code || '',
+      validated: String(inv.validated || parsedArray.validated || '').toLowerCase() === 'true',
+      validation_timestamp: inv.validation_timestamp || parsedArray.validation_timestamp || ''
     };
   });
+
+  // Debug: log processed data for BS260000786
+  const debugInv = state.invoices.find(i => i.invoice_number === 'BS260000786');
+  if (debugInv) {
+    console.log('=== DEBUG BS260000786 (processed) ===');
+    console.log('line_items:', debugInv.line_items);
+    console.log('cn_lr_no:', debugInv.cn_lr_no);
+  }
 
   // Process Purchases
   state.purchases = rawPurchases.map((pur, idx) => {
@@ -541,7 +680,7 @@ function processRawData(data) {
     const stCharges = parseNumericValue(pur.st_charges ?? pur.total_st_charges ?? parsedArray.st_charges ?? parsedArray.total_st_charges ?? 0);
 
     return {
-      id: `pur-${idx}-${Date.now()}`,
+      id: `pur-${(partyInvNo || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}-${idx}`,
       party_inv_no: partyInvNo,
       party_inv_date: (() => {
         let pDate = pur.party_inv_date ? pur.party_inv_date.split('T')[0] : (parsedArray.invoice_date || '');
@@ -595,50 +734,37 @@ function processRawData(data) {
       project: pur.project || '',
       project_code: pur.project_code || '',
       deparment: pur.deparment || pur.department || '',
-      deperment_code: pur.deperment_code || pur.department_code || ''
+      deperment_code: pur.deperment_code || pur.department_code || '',
+      validated: String(pur.validated || parsedArray.validated || '').toLowerCase() === 'true',
+      validation_timestamp: pur.validation_timestamp || parsedArray.validation_timestamp || ''
     };
   });
 
   mergeUploadedPdfsFromRecords();
+
+  // Restore manually-validated flags from local cache (survives server refresh)
+  try {
+    const cachedInvoices = JSON.parse(localStorage.getItem('db_invoices') || '[]');
+    const cachedPurchases = JSON.parse(localStorage.getItem('db_purchases') || '[]');
+    cachedInvoices.forEach(cached => {
+      if (cached.validated) {
+        const match = state.invoices.find(i => i.invoice_number === cached.invoice_number);
+        if (match) match.validated = true;
+      }
+    });
+    cachedPurchases.forEach(cached => {
+      if (cached.validated) {
+        const match = state.purchases.find(p => p.party_inv_no === cached.party_inv_no);
+        if (match) match.validated = true;
+      }
+    });
+  } catch (e) {}
 }
 
 async function syncWithAPI(interactive = true) {
   if (interactive) showToast('Fetching data from server...', 'warning');
-
-  const statusIndicator = document.querySelector('.status-indicator');
-  const syncTimeLabel = document.getElementById('last-sync-time');
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-    const response = await fetch(`${SERVER_BASE_URL}/api/data`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) throw new Error('Server returned error status');
-
-    const data = await response.json();
-
-    if (data && data.success) {
-      processRawData(data);
-      saveToLocalStorage();
-
-      statusIndicator.className = 'status-indicator online';
-      syncTimeLabel.textContent = new Date().toLocaleTimeString();
-
-      showToast('Data synchronized successfully!', 'success');
-      renderAllViews();
-    } else {
-      throw new Error('Server returned unsuccessful payload');
-    }
-  } catch (error) {
-    console.error('Server Fetch Error:', error);
-    statusIndicator.className = 'status-indicator offline';
-    syncTimeLabel.textContent = 'Failed';
-    if (interactive) {
-      showToast('Could not reach server. Make sure the Node.js server is running on port 5112.', 'error');
-    }
-  }
+  await fetchAndRefresh();
+  if (interactive) showToast('Data synchronized successfully!', 'success');
 }
 
 // ==========================================================================
@@ -1167,7 +1293,7 @@ function renderInvoicesLedger() {
     const matchingPur = [...state.purchases].reverse().find(p => String(p.party_inv_no) === String(inv.invoice_number) && p.bill_freight_val === inv.bill_freight_val);
     const isWrong = matchingPur ? hasValidationFailures(matchingPur) : false;
     const isFoOrInvMissing = (!inv.fo_no || inv.fo_no === '-') || (!inv.invoice_number || inv.invoice_number === '-');
-    const isRowAlert = isWrong || isFoOrInvMissing;
+    const isRowAlert = !((matchingPur && matchingPur.validated) || inv.validated) && (isWrong || isFoOrInvMissing);
 
     const alertMsg = "⚠️ Action Required: Please Re-upload Document\nThe FO Number or Invoice Number could not be tracked or detected from this document. Please re-upload a clearer copy of the document because the FO Number is required for AI tracking.";
 
@@ -1216,7 +1342,7 @@ function renderInvoicesLedger() {
       if (e.target.classList.contains('open-pdf-btn') || e.target.closest('.open-pdf-btn')) return;
       if (e.target.tagName === 'A' || e.target.closest('a')) return;
       if (e.target.tagName === 'INPUT') return;
-      openDetailedRecordModal(inv.id);
+      openDetailedRecordModal(inv.invoice_number);
     });
 
     const openPdfBtn = tr.querySelector('.open-pdf-btn');
@@ -1323,7 +1449,7 @@ function renderPurchasesLedger() {
       if (e.target.classList.contains('open-pdf-btn') || e.target.closest('.open-pdf-btn')) return;
       if (e.target.tagName === 'A' || e.target.closest('a')) return;
       if (e.target.tagName === 'INPUT') return;
-      openDetailedRecordModal(pur.id);
+      openDetailedRecordModal(pur.party_inv_no);
     });
 
     const openPdfBtn = tr.querySelector('.open-pdf-btn');
@@ -1532,19 +1658,34 @@ function makeCellEditable(cell) {
 
     const oldVal = record[fieldName];
     record[fieldName] = newVal;
-
-    // Mark record as manually validated since it was corrected/edited
-    record.validated = true;
-    if (recordType === 'invoice' || recordType === 'line_item') {
-      const invNo = recordType === 'invoice' ? record.invoice_number : (state.invoices.find(i => i.id === invoiceId)?.invoice_number || '');
+    
+    if (recordType === 'line_item') {
+      record._manually_edited = true;
+      const invRecord = state.invoices.find(i => i.id === invoiceId);
+      if (invRecord) {
+        invRecord._manually_edited = true;
+        invRecord.validated = true;
+        // Sync line_item field to invoice-level field
+        const fieldToTop = { 'lr_no': 'cn_lr_no', 'truck_no': 'lorry_vehicle_no', 'freight': 'bill_freight_val', 'date': 'lr_date' };
+        if (fieldToTop[fieldName]) invRecord[fieldToTop[fieldName]] = newVal;
+        const invNo = invRecord.invoice_number;
+        if (invNo) {
+          const matchPur = state.purchases.find(p => p.party_inv_no === invNo);
+          if (matchPur) { matchPur.validated = true; matchPur._manually_edited = true; }
+        }
+      }
+    } else if (recordType === 'invoice') {
+      record.validated = true;
+      const invNo = record.invoice_number;
       if (invNo) {
         const matchPur = state.purchases.find(p => p.party_inv_no === invNo);
-        if (matchPur) matchPur.validated = true;
+        if (matchPur) { matchPur.validated = true; matchPur._manually_edited = true; }
       }
     } else if (recordType === 'purchase') {
+      record.validated = true;
       if (record.party_inv_no) {
         const matchInv = state.invoices.find(i => i.invoice_number === record.party_inv_no);
-        if (matchInv) matchInv.validated = true;
+        if (matchInv) { matchInv.validated = true; matchInv._manually_edited = true; }
       }
     }
 
@@ -1595,7 +1736,7 @@ function makeCellEditable(cell) {
           throw new Error();
         }
       }).catch(err => {
-        const directUrl = 'https://script.google.com/macros/s/AKfycbz7nbrvyjN39_D4eTDDB9A9nKS4hhLkcMXFoYT6WUxCDt9NGn1fBGBsavi6Sku1Ze3G/exec';
+        const directUrl = 'https://script.google.com/macros/s/AKfycbyfkvGhPuaVPFe62kyDhCSbKm4UwJ-Rbmr6KQfHfJjtE_Dp9E5dGdB1Bq1NS1r15U4e/exec';
         fetch(directUrl, {
           method: 'POST',
           mode: 'no-cors',
@@ -1608,7 +1749,7 @@ function makeCellEditable(cell) {
       const partyInvNo = (recordType === 'invoice' ? record.invoice_number : record.party_inv_no) || '';
       sendSheetUpdate(recordType, (fieldName === 'invoice_number' || fieldName === 'party_inv_no') ? oldVal : partyInvNo, {
         [fieldName]: newVal
-      });
+      }, record);
     }
     
     // Reset view
@@ -1639,31 +1780,29 @@ function makeCellEditable(cell) {
 function openDetailedRecordModal(target) {
   let invoice = null;
   let purchase = null;
-  let invoiceNumber = '';
+  let invoiceNumber = String(target || '').trim();
 
-  if (typeof target === 'string' && (target.startsWith('inv-') || target.startsWith('pur-'))) {
-    if (target.startsWith('inv-')) {
-      invoice = state.invoices.find(i => i.id === target);
-      if (invoice) {
-        invoiceNumber = String(invoice.invoice_number);
-        purchase = [...state.purchases].reverse().find(p => String(p.party_inv_no) === invoiceNumber && p.bill_freight_val === invoice.bill_freight_val)
-                || [...state.purchases].reverse().find(p => String(p.party_inv_no) === invoiceNumber) || null;
-      }
+  // Always resolve by invoice_number / party_inv_no (stable string-based lookup)
+  // Strip any legacy id prefixes in case old closures still pass them
+  if (invoiceNumber.startsWith('inv-') || invoiceNumber.startsWith('pur-')) {
+    // Try to find by ID first (backward compat), then fall back to string search
+    const byId = invoiceNumber.startsWith('inv-')
+      ? state.invoices.find(i => i.id === invoiceNumber)
+      : state.purchases.find(p => p.id === invoiceNumber);
+    if (byId) {
+      invoiceNumber = byId.invoice_number || byId.party_inv_no || invoiceNumber;
     } else {
-      purchase = state.purchases.find(p => p.id === target);
-      if (purchase) {
-        invoiceNumber = String(purchase.party_inv_no);
-        invoice = [...state.invoices].reverse().find(i => String(i.invoice_number) === invoiceNumber && i.bill_freight_val === purchase.bill_freight_val)
-               || [...state.invoices].reverse().find(i => String(i.invoice_number) === invoiceNumber) || null;
-      }
+      // ID is stale — strip prefix and try as a raw invoice number
+      invoiceNumber = invoiceNumber.replace(/^(inv|pur)-/, '').replace(/_/g, '/');
     }
-    state.selectedRecordId = target;
-  } else {
-    invoiceNumber = String(target);
-    invoice = [...state.invoices].reverse().find(i => String(i.invoice_number) === invoiceNumber) || null;
-    purchase = [...state.purchases].reverse().find(p => String(p.party_inv_no) === invoiceNumber) || null;
-    state.selectedRecordId = invoice ? invoice.id : (purchase ? purchase.id : invoiceNumber);
   }
+
+  // Lookup by invoice_number / party_inv_no
+  invoice  = [...state.invoices].reverse().find(i => String(i.invoice_number) === invoiceNumber) || null;
+  purchase = [...state.purchases].reverse().find(p => String(p.party_inv_no) === invoiceNumber) || null;
+
+  // Store selected record as invoice_number string (stable across re-renders)
+  state.selectedRecordId = invoiceNumber;
 
   // If both empty, cannot open
   if (!invoice && !purchase) {
@@ -1821,12 +1960,12 @@ function buildERPRowsView(invoice, purchase) {
       "TRANSPORTER NAME": pur.party_name || inv.party_name || inv.transporter_name || '-',
       "FO NO": item.fo_no || inv.fo_no || pur.fo_no || '-',
       "OUR INVOICE NUMBER": item.our_invoice_number || ourInvoiceNo || '-',
-      "CN/LR NO": item.lr_no || inv.cn_lr_no || pur.cn_lr_no || '-',
-      "CN/LR DATE": formatDateToDDMMYYYY(item.date || inv.lr_date || pur.party_inv_date),
+      "CN/LR NO": inv.cn_lr_no || pur.cn_lr_no || item.lr_no || '-',
+      "CN/LR DATE": formatDateToDDMMYYYY(inv.lr_date || pur.party_inv_date || item.date),
       "PARTY INVOICE NUMBER(BILL NO)": pur.party_inv_no || inv.party_inv_no || '-',
       "PARTY INVOICE DATE (BILL DATE)": formatDateToDDMMYYYY(pur.party_inv_date || inv.invoice_date),
-      "LORRY NO OR VECHILE NO": item.truck_no || inv.lorry_vehicle_no || pur.lorry_vehicle_no || '-',
-      "FREIGHT VALUE": item.freight || pur.bill_freight_val || inv.bill_freight_val || 0,
+      "LORRY NO OR VECHILE NO": inv.lorry_vehicle_no || pur.lorry_vehicle_no || item.truck_no || '-',
+      "FREIGHT VALUE": inv.bill_freight_val ?? pur.bill_freight_val ?? item.freight ?? 0,
       "ST CHARGES": pur.st_charges || inv.st_charges || 0,
       "Invoice Value (₹)": pur.net_payable || inv.net_payable || 0
     };
@@ -2160,7 +2299,7 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
       });
       inputHtml += `</select>`;
     } else {
-      inputHtml = `<input type="${f.type}" name="inv_${f.key}" value="${f.value}" class="form-control">`;
+      inputHtml = `<input type="${f.type}" name="inv_${f.key}" value="${f.type === 'date' ? normalizeToISODate(f.value) : escapeHtml(String(f.value ?? ''))}" class="form-control">`;
     }
 
     editForm.innerHTML += `
@@ -2241,13 +2380,13 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
       const invoiceIdAttr = invoice ? invoice.id : '';
 
       tr.innerHTML = `
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="date" title="Double click to edit"` : ''}>${formatDateToDDMMYYYY(item.date)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="date" title="Double click to edit"` : ''}>${formatDateToDDMMYYYY(invoice.lr_date || item.date)}</td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="our_invoice_number" title="Double click to edit"` : ''}><span class="badge badge-purple" style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(item.our_invoice_number || invoiceNumber || '-')}</span></td>
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="truck_no" title="Double click to edit"` : ''}><strong>${escapeHtml(item.truck_no || '-')}</strong></td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="truck_no" title="Double click to edit"` : ''}><strong>${escapeHtml(invoice.lorry_vehicle_no || item.truck_no || '-')}</strong></td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="fo_no" title="Double click to edit"` : ''}>${(!item.fo_no || item.fo_no === '-') ? '<span style="color: var(--accent-red); font-weight: 600;" title="FO Number not tracked - Please re-upload document">- (Re-upload)</span>' : escapeHtml(item.fo_no)}</td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="description" title="Double click to edit"` : ''}>${escapeHtml(item.description || '-')}</td>
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="lr_no" title="Double click to edit"` : ''}>${escapeHtml(item.lr_no || '-')}</td>
-        <td class="text-right ${isEditable ? 'editable-cell' : ''}" ${isEditable ? `data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="freight" title="Double click to edit"` : ''}>${formatCurrency(item.freight)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="lr_no" title="Double click to edit"` : ''}>${escapeHtml(invoice.cn_lr_no || item.lr_no || '-')}</td>
+        <td class="text-right ${isEditable ? 'editable-cell' : ''}" ${isEditable ? `data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="freight" title="Double click to edit"` : ''}>${formatCurrency(invoice.bill_freight_val ?? item.freight ?? 0)}</td>
       `;
 
       tr.querySelectorAll('.editable-cell').forEach(cell => {
@@ -2474,7 +2613,7 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
     // { label: "Project Code", key: "project_code", value: coalescedProjectCode, type: "text" },
     // { label: "Department", key: "deparment", value: coalescedDeparment, type: "text" },
     // { label: "Department Code", key: "deperment_code", value: coalescedDepermentCode, type: "text" },
-    // { label: "Tax Criteria", key: "tax_critaria", value: coalescedTaxCritaria, type: "text" },
+    // { label: "Tax Criteria"c, key: "tax_critaria", value: coalescedTaxCritaria, type: "text" },
     // { label: "Tax Criteria Name", key: "tax_critaria_name", value: coalescedTaxCritariaName, type: "text" }
   ];
 
@@ -2508,7 +2647,7 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
     } else if (f.type === 'textarea') {
       inputHtml = `<textarea name="pur_${f.key}" class="form-control" rows="12" style="font-family: monospace; font-size: 0.925rem; line-height: 1.5; padding: 12px; background: var(--bg-darker); border-color: rgba(255,255,255,0.1); color: var(--text-main);">${escapeHtml(f.value || '')}</textarea>`;
     } else {
-      inputHtml = `<input type="${f.type}" name="pur_${f.key}" value="${f.value}" class="form-control" ${f.type === 'number' ? 'step="any"' : ''}>`;
+      inputHtml = `<input type="${f.type}" name="pur_${f.key}" value="${f.type === 'date' ? normalizeToISODate(f.value) : escapeHtml(String(f.value ?? ''))}" class="form-control" ${f.type === 'number' ? 'step="any"' : ''}>`;
     }
 
     editForm.innerHTML += `
@@ -2693,10 +2832,10 @@ function saveDetailFormOverrides() {
 
       // Trigger writebacks to Google Sheets database
       if (invoiceArray.length > 0) {
-        sendSheetUpdate('invoice', invNumber, invoiceArray[0]);
+        sendSheetUpdate('invoice', invNumber, invoiceArray[0], invoiceArray[0]);
       }
       if (purchaseArray.length > 0) {
-        sendSheetUpdate('purchase', invNumber, purchaseArray[0]);
+        sendSheetUpdate('purchase', invNumber, purchaseArray[0], purchaseArray[0]);
       }
 
       showToast("Raw JSON override applied successfully!", "success");
@@ -2754,7 +2893,7 @@ function saveDetailFormOverrides() {
       return inv;
     });
 
-    state.selectedRecordId = invoice.id;
+    state.selectedRecordId = invoice.invoice_number;
   }
 
   // Modify Purchase values
@@ -2812,7 +2951,7 @@ function saveDetailFormOverrides() {
       return pur;
     });
 
-    state.selectedRecordId = purchase.id;
+    state.selectedRecordId = purchase.party_inv_no;
   }
 
   // Renaming linked entries on invoice number change to prevent broken matches
@@ -2876,7 +3015,7 @@ function saveDetailFormOverrides() {
       total_invoice_value: parseFloat(getFormVal('invoice-details-edit-form', 'inv_total_invoice_value') || 0),
       RCM: parseFloat(getFormVal('invoice-details-edit-form', 'inv_RCM') || 0)
     };
-    sendSheetUpdate('invoice', invNumber, invoiceFields);
+    sendSheetUpdate('invoice', invNumber, invoiceFields, invoice);
   }
 
   if (purchase) {
@@ -2903,7 +3042,7 @@ function saveDetailFormOverrides() {
       tax_critaria: getFormVal('purchase-details-edit-form', 'pur_tax_critaria'),
       tax_critaria_name: getFormVal('purchase-details-edit-form', 'pur_tax_critaria_name')
     };
-    sendSheetUpdate('purchase', invNumber, purchaseFields);
+    sendSheetUpdate('purchase', invNumber, purchaseFields, purchase);
   }
 
   saveToLocalStorage();
@@ -2914,7 +3053,7 @@ function saveDetailFormOverrides() {
   renderAllViews();
 }
 
-async function sendSheetUpdate(type, partyInvNo, fields) {
+async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
   if (!partyInvNo) return;
   
   const mappedUpdates = {};
@@ -2928,10 +3067,19 @@ async function sendSheetUpdate(type, partyInvNo, fields) {
     mappedUpdates[mappedKey] = val;
   });
 
+  // Use our_bill_no as search for invoice if available
+  const searchCol = (type === 'invoice' && record && record.our_bill_no) ? 'our_bill_no' : 'party_inv_no';
+  const searchVal = (type === 'invoice' && record && record.our_bill_no) ? record.our_bill_no : partyInvNo;
+
+  // Include line_items in updates if record has them
+  if (record && record.line_items && Array.isArray(record.line_items)) {
+    mappedUpdates.line_items = record.line_items;
+  }
+
   const payload = {
     sheetName: type === 'invoice' ? 'Invoice_Items' : 'Purchase_data',
-    searchColumn: 'party_inv_no',
-    searchValue: partyInvNo,
+    searchColumn: searchCol,
+    searchValue: searchVal,
     updates: mappedUpdates
   };
 
@@ -2952,7 +3100,7 @@ async function sendSheetUpdate(type, partyInvNo, fields) {
   } catch (e) {
     console.warn("Server proxy failed, trying direct browser writeback:", e);
     try {
-      const directUrl = 'https://script.google.com/macros/s/AKfycbz7nbrvyjN39_D4eTDDB9A9nKS4hhLkcMXFoYT6WUxCDt9NGn1fBGBsavi6Sku1Ze3G/exec';
+      const directUrl = 'https://script.google.com/macros/s/AKfycbyfkvGhPuaVPFe62kyDhCSbKm4UwJ-Rbmr6KQfHfJjtE_Dp9E5dGdB1Bq1NS1r15U4e/exec';
       await fetch(directUrl, {
         method: 'POST',
         mode: 'no-cors',
@@ -3072,15 +3220,30 @@ async function validateActiveBill() {
 
   showToast(`✓ Bill ${invoiceNumber} has been validated successfully!`, "success");
 
+  // Push validation status globally back to Google Sheets database
+  const updatePayload = {
+    validated: 'true',
+    validation_timestamp: nowStr
+  };
+  if (invoice) {
+    sendSheetUpdate('invoice', invoice.invoice_number, updatePayload, invoice);
+  }
+  if (purchase) {
+    sendSheetUpdate('purchase', purchase.party_inv_no, updatePayload, purchase);
+  }
+
   // Update the modal status badge
   const statusBadge = document.getElementById('modal-badge-status');
-  statusBadge.textContent = 'Validated';
-  statusBadge.className = 'badge badge-green';
+  if (statusBadge) {
+    statusBadge.textContent = 'Validated';
+    statusBadge.className = 'badge badge-green';
+  }
   
   // Optionally close after validation
   setTimeout(() => {
-    document.getElementById('detail-modal').classList.remove('active');
-  }, 1500);
+    const modal = document.getElementById('detail-modal');
+    if (modal) modal.classList.remove('active');
+  }, 1800);
 }
 
 // ==========================================================================
@@ -3154,7 +3317,7 @@ function submitNewManualRecord() {
     bill_freight_val: parseFloat(formData.get('bill_freight_val') || 0),
     net_payable: parseFloat(formData.get('net_payable') || 0),
     RCM: parseFloat(formData.get('RCM') || 0)
-  });
+  }, newInv);
 
   sendSheetUpdate('purchase', invoiceNumber, {
     party_inv_no: invoiceNumber,
@@ -3170,7 +3333,7 @@ function submitNewManualRecord() {
     tds_percent: parseFloat(formData.get('tds_percent') || 0),
     net_payable: parseFloat(formData.get('net_payable') || 0),
     rcm: parseFloat(formData.get('RCM') || 0)
-  });
+  }, newPur);
 
   showToast(`Record ${invoiceNumber} created!`, "success");
 
