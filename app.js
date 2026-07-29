@@ -591,6 +591,7 @@ function processRawData(data) {
       description: extractFirstString(pur.description || pur.item_name || parsedArray.item_name || parsedArray.description || ''),
       present_our_invoice: pur.present_our_invoice || '',
       tax_critaria: pur.tax_critaria || pur.tax_criteria || '',
+      tax_critaria_name: pur.tax_critaria_name || pur.tax_criteria_name || '',
       project: pur.project || '',
       project_code: pur.project_code || '',
       deparment: pur.deparment || pur.department || '',
@@ -2382,6 +2383,63 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
   const foRate = purchase.fo_rate || matchingInv?.fo_rate || 0;
   const foQty = purchase.fo_qty || matchingInv?.fo_qty || 0;
 
+  // Pull all purchase rows that match this invoice number via dual-key search
+  // (same logic as ERP booking: match by party_inv_no OR by our bill/present_our_invoice number)
+  const invNoStr = String(purchase.party_inv_no || '').trim();
+
+  // Derive our bill number the same way as the ERP booking tab
+  const ourBillNoResolved = (() => {
+    if (matchingInv?.our_bill_no && String(matchingInv.our_bill_no).trim() !== '') return String(matchingInv.our_bill_no).trim();
+    if (purchase.our_bill_no && String(purchase.our_bill_no).trim() !== '') return String(purchase.our_bill_no).trim();
+    if (purchase.present_our_invoice && String(purchase.present_our_invoice).trim() !== '') return String(purchase.present_our_invoice).trim();
+    // Check line items on the matching invoice
+    const lineItemOurNo = matchingInv?.line_items?.map(li => li.our_invoice_number).find(v => v && String(v).trim() !== '');
+    if (lineItemOurNo) return String(lineItemOurNo).trim();
+    // Parse LP-style bill numbers from AI summary
+    const aiText = (purchase.ai_summary || matchingInv?.ai_summary || '');
+    if (aiText) {
+      const m = aiText.match(/([A-Z]{2,}[0-9A-Za-z-]{4,})\s+Validated/);
+      if (m) return m[1];
+      const mLP = aiText.match(/(LP[A-Za-z0-9-]+)/);
+      if (mLP) return mLP[1];
+      const mBS = aiText.match(/(BS[0-9]{5,})/i);
+      if (mBS) return mBS[1];
+    }
+    return '';
+  })();
+
+  const allMatchedPurchases = state.purchases.filter(p => {
+    const pInvNo = String(p.party_inv_no || '').trim();
+    const pOurBill = String(p.present_our_invoice || p.our_bill_no || '').trim();
+    const matchByInvNo = invNoStr && pInvNo && pInvNo === invNoStr;
+    const matchByOurBill = ourBillNoResolved && pOurBill && pOurBill === ourBillNoResolved;
+    return matchByInvNo || matchByOurBill;
+  });
+
+  const coalesceField = (key) =>
+    purchase[key] ||
+    allMatchedPurchases.map(p => p[key]).find(v => v && String(v).trim() !== '' && v !== '-') ||
+    '';
+
+  const coalescedProject      = coalesceField('project');
+  const coalescedProjectCode  = coalesceField('project_code');
+  const coalescedDeparment    = coalesceField('deparment');
+  const coalescedDepermentCode = coalesceField('deperment_code');
+  const coalescedTaxCritaria  = coalesceField('tax_critaria');
+  const coalescedTaxCritariaName = coalesceField('tax_critaria_name');
+  const coalescedServiceAccName = coalesceField('service_acc_name');
+  const coalescedServiceAccCode = coalesceField('service_acc_code');
+  const coalescedExpenseAccName = coalesceField('expense_acc_name');
+  const coalescedExpenseAccCode = coalesceField('expense_acc_code');
+  const coalescedSubAccName   = coalesceField('sub_acc_name');
+  const coalescedSubAccCode   = coalesceField('sub_acc_code');
+  const coalescedSacCode      = coalesceField('sac_code');
+  const coalescedSeries       = coalesceField('series');
+  const coalescedDivCode      = coalesceField('div_code');
+  const coalescedAddonCode    = coalesceField('addon_code_str');
+  const coalescedStaxCode     = coalesceField('stax_code_str');
+  const coalescedOurRegAddr   = coalesceField('our_reg_addr');
+
   const fields = [
     { label: "Invoice Number", key: "party_inv_no", value: purchase.party_inv_no, type: "text" },
     { label: "Posting Date", key: "party_inv_date", value: purchase.party_inv_date, type: "date" },
@@ -2390,18 +2448,18 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
     { label: "FO Qty", key: "fo_qty", value: foQty, type: "number" },
     { label: "FO Order Value (₹)", key: "fo_order_value", value: foOrderValue, type: "number" },
     { label: "Supplier Party", key: "party_name", value: purchase.party_name, type: "text" },
-    { label: "Our Registration Address", key: "our_reg_addr", value: purchase.our_reg_addr, type: "text" },
-    { label: "Tnature", key: "expense_acc_name", value: purchase.expense_acc_name, type: "text" },
-    { label: "Expense Account Code", key: "expense_acc_code", value: purchase.expense_acc_code, type: "text" },
-    { label: "Sub Ledger Account", key: "sub_acc_name", value: purchase.sub_acc_name, type: "text" },
-    { label: "Sub Account Code", key: "sub_acc_code", value: purchase.sub_acc_code, type: "text" },
-    { label: "Service Account", key: "service_acc_name", value: purchase.service_acc_name, type: "text" },
-    { label: "Service Account Code", key: "service_acc_code", value: purchase.service_acc_code, type: "text" },
-    { label: "SAC Code", key: "sac_code", value: purchase.sac_code, type: "text" },
-    { label: "Series", key: "series", value: purchase.series, type: "text" },
-    { label: "Division", key: "div_code", value: purchase.div_code, type: "text" },
-    { label: "Addon Code", key: "addon_code_str", value: purchase.addon_code_str, type: "text" },
-    { label: "GST State Code", key: "stax_code_str", value: purchase.stax_code_str, type: "text" },
+    { label: "Our Registration Address", key: "our_reg_addr", value: coalescedOurRegAddr, type: "text" },
+    { label: "Tnature", key: "expense_acc_name", value: coalescedExpenseAccName, type: "text" },
+    { label: "Expense Account Code", key: "expense_acc_code", value: coalescedExpenseAccCode, type: "text" },
+    { label: "Sub Ledger Account", key: "sub_acc_name", value: coalescedSubAccName, type: "text" },
+    { label: "Sub Account Code", key: "sub_acc_code", value: coalescedSubAccCode, type: "text" },
+    { label: "Service Account", key: "service_acc_name", value: coalescedServiceAccName, type: "text" },
+    { label: "Service Account Code", key: "service_acc_code", value: coalescedServiceAccCode, type: "text" },
+    { label: "SAC Code", key: "sac_code", value: coalescedSacCode, type: "text" },
+    { label: "Series", key: "series", value: coalescedSeries, type: "text" },
+    { label: "Division", key: "div_code", value: coalescedDivCode, type: "text" },
+    { label: "Addon Code", key: "addon_code_str", value: coalescedAddonCode, type: "text" },
+    { label: "GST State Code", key: "stax_code_str", value: coalescedStaxCode, type: "text" },
     { label: "Consolidated Freight (₹)", key: "bill_freight_val", value: totalFreight, type: "number" },
     { label: "ST Charges (₹)", key: "st_charges", value: stCharges, type: "number" },
     { label: "Consolidated Net Payable (₹)", key: "taxable_value", value: valueAfterTds, type: "number" },
@@ -2412,12 +2470,12 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
       { label: "0%", value: 0 },
       { label: "12%", value: 0.12 }
     ]},
-    { label: "Project", key: "project", value: purchase.project, type: "text" },
-    { label: "Project Code", key: "project_code", value: purchase.project_code, type: "text" },
-    { label: "Department", key: "deparment", value: purchase.deparment, type: "text" },
-    { label: "Department Code", key: "deperment_code", value: purchase.deperment_code, type: "text" },
-    { label: "Tax Criteria", key: "tax_critaria", value: purchase.tax_critaria, type: "text" },
-    { label: "Tax Criteria Name", key: "tax_critaria_name", value: purchase.tax_critaria_name, type: "text" }
+    // { label: "Project", key: "project", value: coalescedProject, type: "text" },
+    // { label: "Project Code", key: "project_code", value: coalescedProjectCode, type: "text" },
+    // { label: "Department", key: "deparment", value: coalescedDeparment, type: "text" },
+    // { label: "Department Code", key: "deperment_code", value: coalescedDepermentCode, type: "text" },
+    // { label: "Tax Criteria", key: "tax_critaria", value: coalescedTaxCritaria, type: "text" },
+    // { label: "Tax Criteria Name", key: "tax_critaria_name", value: coalescedTaxCritariaName, type: "text" }
   ];
 
   fields.forEach(f => {
