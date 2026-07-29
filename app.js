@@ -3061,6 +3061,7 @@ async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
     let mappedKey = key;
     if (type === 'purchase') {
       if (key === 'st_charges') mappedKey = 'total_st_charges';
+      if (key === 'ai_summary') mappedKey = 'AI SUMMRY';
     } else if (type === 'invoice') {
       if (key === 'invoice_number') mappedKey = 'party_inv_no';
     }
@@ -3213,6 +3214,13 @@ async function validateActiveBill() {
   if (purchase) {
     purchase.validated = true;
     purchase.validation_timestamp = nowStr;
+    if (purchase.ai_summary) {
+      purchase.ai_summary = purchase.ai_summary
+        .replace(/Status:\s*FAILED/i, 'Status: PASSED')
+        .replace(/^Failed:[\s\S]*?^={2,}/m, 'Failed:\nNone\n\n====================================')
+        .replace(/\bfailed\s*:\s*\d+\b/i, 'Failed: 0')
+        .replace(/✖/g, '✔');
+    }
   }
 
   saveToLocalStorage();
@@ -3225,11 +3233,15 @@ async function validateActiveBill() {
     validated: 'true',
     validation_timestamp: nowStr
   };
+  const purchasePayload = {
+    ...updatePayload,
+    ...(purchase && purchase.ai_summary ? { ai_summary: purchase.ai_summary } : {})
+  };
   if (invoice) {
     sendSheetUpdate('invoice', invoice.invoice_number, updatePayload, invoice);
   }
   if (purchase) {
-    sendSheetUpdate('purchase', purchase.party_inv_no, updatePayload, purchase);
+    sendSheetUpdate('purchase', purchase.party_inv_no, purchasePayload, purchase);
   }
 
   // Update the modal status badge
