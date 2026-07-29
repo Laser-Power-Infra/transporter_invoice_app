@@ -1472,14 +1472,27 @@ function makeCellEditable(cell) {
   const originalValue = cell.textContent.trim();
   const fieldName = cell.dataset.field;
   const recordId = cell.dataset.id;
-  const recordType = cell.dataset.type; // 'invoice' or 'purchase'
+  const recordType = cell.dataset.type; // 'invoice', 'purchase' or 'line_item'
+  const invoiceId = cell.dataset.invoiceId;
+  const lineIndex = cell.dataset.lineIndex !== undefined ? parseInt(cell.dataset.lineIndex) : -1;
 
-  // Retrieve raw record
-  const record = recordType === 'invoice' ? 
-    state.invoices.find(i => i.id === recordId) : 
-    state.purchases.find(p => p.id === recordId);
+  let record = null;
+  let rawVal = '';
 
-  const rawVal = record[fieldName];
+  if (recordType === 'line_item') {
+    const invRecord = state.invoices.find(i => i.id === invoiceId);
+    if (invRecord && invRecord.line_items) {
+      record = invRecord.line_items[lineIndex];
+      rawVal = record ? record[fieldName] : '';
+    }
+  } else {
+    record = recordType === 'invoice' ? 
+      state.invoices.find(i => i.id === recordId) : 
+      state.purchases.find(p => p.id === recordId);
+    if (record) {
+      rawVal = record[fieldName];
+    }
+  }
 
   // Insert Input Element
   cell.innerHTML = '';
@@ -1510,11 +1523,32 @@ function makeCellEditable(cell) {
       else newVal = parsedVal;
     }
 
+    if (!record) {
+      cell.classList.remove('editing-now');
+      cell.textContent = originalValue;
+      return;
+    }
+
     const oldVal = record[fieldName];
     record[fieldName] = newVal;
 
+    // Mark record as manually validated since it was corrected/edited
+    record.validated = true;
+    if (recordType === 'invoice' || recordType === 'line_item') {
+      const invNo = recordType === 'invoice' ? record.invoice_number : (state.invoices.find(i => i.id === invoiceId)?.invoice_number || '');
+      if (invNo) {
+        const matchPur = state.purchases.find(p => p.party_inv_no === invNo);
+        if (matchPur) matchPur.validated = true;
+      }
+    } else if (recordType === 'purchase') {
+      if (record.party_inv_no) {
+        const matchInv = state.invoices.find(i => i.invoice_number === record.party_inv_no);
+        if (matchInv) matchInv.validated = true;
+      }
+    }
+
     // Renaming linked keys to keep Invoices and Purchases reconciled
-    if ((fieldName === 'invoice_number' && recordType === 'invoice') || (fieldName === 'party_inv_no' && recordType === 'purchase')) {
+    if (recordType !== 'line_item' && ((fieldName === 'invoice_number' && recordType === 'invoice') || (fieldName === 'party_inv_no' && recordType === 'purchase'))) {
       state.invoices = state.invoices.map(inv => {
         if (inv.invoice_number === oldVal) inv.invoice_number = newVal;
         return inv;
@@ -1526,10 +1560,62 @@ function makeCellEditable(cell) {
     }
     
     saveToLocalStorage();
+
+    // Call Google Sheets writeback API
+    if (recordType === 'line_item') {
+      const invRecord = state.invoices.find(i => i.id === invoiceId);
+      const lrNo = record.lr_no || record.cn_lr_no || '';
+      
+      const searchCol = (fieldName !== 'lr_no' && fieldName !== 'cn_lr_no' && lrNo) ? 'cn_lr_no' : 'party_inv_no';
+      const searchVal = searchCol === 'cn_lr_no' ? lrNo : (invRecord.invoice_number || invRecord.party_inv_no);
+      
+      const mappedKey = 
+        fieldName === 'date' ? 'lr_date' :
+        fieldName === 'truck_no' ? 'lorry_vehicle_no' :
+        fieldName === 'lr_no' ? 'cn_lr_no' :
+        fieldName === 'freight' ? 'bill_freight_val' :
+        fieldName;
+
+      const payload = {
+        sheetName: 'Invoice_Items',
+        searchColumn: searchCol,
+        searchValue: searchVal,
+        updates: { [mappedKey]: newVal }
+      };
+
+      fetch(`${SERVER_BASE_URL}/api/update-record`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(res => res.json()).then(result => {
+        if (result.success || result.status === 'success') {
+          showToast("Spreadsheet updated successfully!", "success");
+        } else {
+          throw new Error();
+        }
+      }).catch(err => {
+        const directUrl = 'https://script.google.com/macros/s/AKfycbz7nbrvyjN39_D4eTDDB9A9nKS4hhLkcMXFoYT6WUxCDt9NGn1fBGBsavi6Sku1Ze3G/exec';
+        fetch(directUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(payload)
+        });
+        showToast("Spreadsheet updated directly!", "success");
+      });
+    } else {
+      const partyInvNo = (recordType === 'invoice' ? record.invoice_number : record.party_inv_no) || '';
+      sendSheetUpdate(recordType, (fieldName === 'invoice_number' || fieldName === 'party_inv_no') ? oldVal : partyInvNo, {
+        [fieldName]: newVal
+      });
+    }
     
     // Reset view
     cell.classList.remove('editing-now');
     renderAllViews();
+    if (recordType === 'line_item') {
+      openDetailedRecordModal(invoiceId);
+    }
     showToast(`Updated ${fieldName} inline successfully!`, 'success');
   };
 
@@ -1758,6 +1844,28 @@ function buildERPRowsView(invoice, purchase) {
     return matchByInvNo || matchByOurBill;
   });
 
+  // Helper to determine if a transaction is RCM (below or same as 5% GST)
+  const isRcmTransaction = (() => {
+    const rcmVal = pur.rcm || inv.RCM || 0;
+    if (rcmVal > 0) return true;
+
+    const totalGstValue = (pur.cgst || 0) + (pur.sgst || 0) + (pur.igst || 0) + (inv.cgst || 0) + (inv.sgst || 0) + (inv.igst || 0);
+    const freight = pur.bill_freight_val || inv.bill_freight_val || 0;
+    if (freight > 0) {
+      const computedGstPercent = totalGstValue / freight;
+      if (computedGstPercent > 0 && computedGstPercent <= 0.055) {
+        return true;
+      }
+    }
+
+    const aiSummaryText = (pur && pur.ai_summary) || (inv && inv.ai_summary) || '';
+    if (aiSummaryText.toLowerCase().includes('rcm') || aiSummaryText.toLowerCase().includes('5%')) {
+      return true;
+    }
+
+    return false;
+  })();
+
   const calculatedFallback = (() => {
     let stateCode = String(pur.stax_code_str || inv.stax_code_str || '').trim();
     if (!stateCode && inv.transporter_gstin) {
@@ -1767,15 +1875,9 @@ function buildERPRowsView(invoice, purchase) {
       stateCode = '19'; 
     }
 
-    const rcmVal = pur.rcm || inv.RCM || 0;
-    const totalGstValue = (pur.cgst || 0) + (pur.sgst || 0) + (pur.igst || 0) + (inv.cgst || 0) + (inv.sgst || 0) + (inv.igst || 0);
-    const freight = pur.bill_freight_val || inv.bill_freight_val || 1;
-    const computedGstPercent = totalGstValue / freight;
-
-    const isRcm = rcmVal > 0 || (computedGstPercent > 0 && computedGstPercent <= 0.055);
     const isState19 = stateCode === '19';
 
-    if (isRcm) {
+    if (isRcmTransaction) {
       return isState19 ? 'SG01' : 'IG01';
     } else {
       return isState19 ? 'GST0' : 'GST1';
@@ -1838,7 +1940,7 @@ function buildERPRowsView(invoice, purchase) {
     "DIVITION": pur.div_code || inv.div_code || '-',
     "ADDON CODE": pur.addon_code_str || inv.addon_code_str || '-',
     "TAX CRITARIA": coalescedTaxCritaria,
-    "GST PERCENTAGE": (pur.rcm || inv.RCM) ? `${Math.round((pur.rcm || inv.RCM) * 100)}%` : '0%',
+    "GST PERCENTAGE": isRcmTransaction ? "5%" : "18%",
     "TDS PERCENTAGE": pur.tds_percent ? `${(pur.tds_percent * 100).toFixed(1)}%` : '0%',
     "TOTAL NET PAYABLE": pur.net_payable || inv.net_payable || 0
   };
@@ -2127,15 +2229,33 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
 
     deduped.forEach(item => {
       const tr = document.createElement('tr');
+      
+      const lineIndex = invoice && invoice.line_items ? invoice.line_items.findIndex(li => 
+        (li.truck_no || '') === (item.truck_no || '') && 
+        (li.lr_no || '') === (item.lr_no || '') && 
+        (li.freight || 0) === (item.freight || 0)
+      ) : -1;
+
+      const isEditable = lineIndex !== -1;
+      const invoiceIdAttr = invoice ? invoice.id : '';
+
       tr.innerHTML = `
-        <td>${formatDateToDDMMYYYY(item.date)}</td>
-        <td><span class="badge badge-purple" style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(item.our_invoice_number || invoiceNumber || '-')}</span></td>
-        <td><strong>${escapeHtml(item.truck_no || '-')}</strong></td>
-        <td>${(!item.fo_no || item.fo_no === '-') ? '<span style="color: var(--accent-red); font-weight: 600;" title="FO Number not tracked - Please re-upload document">- (Re-upload)</span>' : escapeHtml(item.fo_no)}</td>
-        <td>${escapeHtml(item.description || '-')}</td>
-        <td>${escapeHtml(item.lr_no || '-')}</td>
-        <td class="text-right">${formatCurrency(item.freight)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="date" title="Double click to edit"` : ''}>${formatDateToDDMMYYYY(item.date)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="our_invoice_number" title="Double click to edit"` : ''}><span class="badge badge-purple" style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(item.our_invoice_number || invoiceNumber || '-')}</span></td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="truck_no" title="Double click to edit"` : ''}><strong>${escapeHtml(item.truck_no || '-')}</strong></td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="fo_no" title="Double click to edit"` : ''}>${(!item.fo_no || item.fo_no === '-') ? '<span style="color: var(--accent-red); font-weight: 600;" title="FO Number not tracked - Please re-upload document">- (Re-upload)</span>' : escapeHtml(item.fo_no)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="description" title="Double click to edit"` : ''}>${escapeHtml(item.description || '-')}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="lr_no" title="Double click to edit"` : ''}>${escapeHtml(item.lr_no || '-')}</td>
+        <td class="text-right ${isEditable ? 'editable-cell' : ''}" ${isEditable ? `data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="freight" title="Double click to edit"` : ''}>${formatCurrency(item.freight)}</td>
       `;
+
+      tr.querySelectorAll('.editable-cell').forEach(cell => {
+        cell.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          makeCellEditable(cell);
+        });
+      });
+
       lineItemsTableBody.appendChild(tr);
     });
   }
@@ -2291,7 +2411,13 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
       { label: "5%", value: 0.05 },
       { label: "0%", value: 0 },
       { label: "12%", value: 0.12 }
-    ]}
+    ]},
+    { label: "Project", key: "project", value: purchase.project, type: "text" },
+    { label: "Project Code", key: "project_code", value: purchase.project_code, type: "text" },
+    { label: "Department", key: "deparment", value: purchase.deparment, type: "text" },
+    { label: "Department Code", key: "deperment_code", value: purchase.deperment_code, type: "text" },
+    { label: "Tax Criteria", key: "tax_critaria", value: purchase.tax_critaria, type: "text" },
+    { label: "Tax Criteria Name", key: "tax_critaria_name", value: purchase.tax_critaria_name, type: "text" }
   ];
 
   fields.forEach(f => {
@@ -2506,6 +2632,15 @@ function saveDetailFormOverrides() {
       }
 
       saveToLocalStorage();
+
+      // Trigger writebacks to Google Sheets database
+      if (invoiceArray.length > 0) {
+        sendSheetUpdate('invoice', invNumber, invoiceArray[0]);
+      }
+      if (purchaseArray.length > 0) {
+        sendSheetUpdate('purchase', invNumber, purchaseArray[0]);
+      }
+
       showToast("Raw JSON override applied successfully!", "success");
       openDetailedRecordModal(state.selectedRecordId);
       renderAllViews();
@@ -2582,6 +2717,12 @@ function saveDetailFormOverrides() {
     const overrideRcm = parseFloat(getFormVal('purchase-details-edit-form', 'pur_rcm') || 0);
     const overrideTotalInv = parseFloat(getFormVal('purchase-details-edit-form', 'pur_total_invoice_value') || 0);
     const overrideAiSummary = getFormVal('purchase-details-edit-form', 'pur_ai_summary');
+    const overrideProject = getFormVal('purchase-details-edit-form', 'pur_project');
+    const overrideProjectCode = getFormVal('purchase-details-edit-form', 'pur_project_code');
+    const overrideDeparment = getFormVal('purchase-details-edit-form', 'pur_deparment');
+    const overrideDepermentCode = getFormVal('purchase-details-edit-form', 'pur_deperment_code');
+    const overrideTaxCritaria = getFormVal('purchase-details-edit-form', 'pur_tax_critaria');
+    const overrideTaxCritariaName = getFormVal('purchase-details-edit-form', 'pur_tax_critaria_name');
 
     state.purchases = state.purchases.map(pur => {
       if (pur.id === purchase.id) {
@@ -2601,7 +2742,13 @@ function saveDetailFormOverrides() {
           tds_percent: overrideTds,
           rcm: overrideRcm,
           total_invoice_value: overrideTotalInv,
-          ai_summary: overrideAiSummary
+          ai_summary: overrideAiSummary,
+          project: overrideProject,
+          project_code: overrideProjectCode,
+          deparment: overrideDeparment,
+          deperment_code: overrideDepermentCode,
+          tax_critaria: overrideTaxCritaria,
+          tax_critaria_name: overrideTaxCritariaName
         };
       }
       return pur;
@@ -2614,13 +2761,91 @@ function saveDetailFormOverrides() {
   if (invoice && purchase) {
     const finalNo = state.selectedRecordId === invoice.id ? overrideInvNo : overridePurNo;
     state.purchases = state.purchases.map(pur => {
-      if (pur.id === purchase.id) pur.party_inv_no = finalNo;
+      if (pur.id === purchase.id) {
+        pur.party_inv_no = finalNo;
+        pur.validated = true;
+        pur.validation_timestamp = new Date().toISOString();
+      }
       return pur;
     });
     state.invoices = state.invoices.map(inv => {
-      if (inv.id === invoice.id) inv.invoice_number = finalNo;
+      if (inv.id === invoice.id) {
+        inv.invoice_number = finalNo;
+        inv.validated = true;
+        inv.validation_timestamp = new Date().toISOString();
+      }
       return inv;
     });
+  } else {
+    if (invoice) {
+      state.invoices = state.invoices.map(inv => {
+        if (inv.id === invoice.id) {
+          inv.validated = true;
+          inv.validation_timestamp = new Date().toISOString();
+        }
+        return inv;
+      });
+      const matchPur = state.purchases.find(p => p.party_inv_no === overrideInvNo);
+      if (matchPur) matchPur.validated = true;
+    }
+    if (purchase) {
+      state.purchases = state.purchases.map(pur => {
+        if (pur.id === purchase.id) {
+          pur.validated = true;
+          pur.validation_timestamp = new Date().toISOString();
+        }
+        return pur;
+      });
+      const matchInv = state.invoices.find(i => i.invoice_number === overridePurNo);
+      if (matchInv) matchInv.validated = true;
+    }
+  }
+
+  // Trigger writebacks to Google Sheets database
+  if (invoice) {
+    const invoiceFields = {
+      invoice_number: overrideInvNo,
+      invoice_date: getFormVal('invoice-details-edit-form', 'inv_invoice_date'),
+      party_name: getFormVal('invoice-details-edit-form', 'inv_transporter_name'),
+      buyer_name: getFormVal('invoice-details-edit-form', 'inv_buyer_name'),
+      transporter_name: getFormVal('invoice-details-edit-form', 'inv_transporter_name'),
+      transporter_gstin: getFormVal('invoice-details-edit-form', 'inv_transporter_gstin'),
+      to_place_name: getFormVal('invoice-details-edit-form', 'inv_to_place_name'),
+      item_name: getFormVal('invoice-details-edit-form', 'inv_item_name'),
+      bill_freight_val: parseFloat(getFormVal('invoice-details-edit-form', 'inv_bill_freight_val') || 0),
+      st_charges: parseFloat(getFormVal('invoice-details-edit-form', 'inv_st_charges') || 0),
+      net_payable: parseFloat(getFormVal('invoice-details-edit-form', 'inv_total_invoice_value') || 0),
+      total_invoice_value: parseFloat(getFormVal('invoice-details-edit-form', 'inv_total_invoice_value') || 0),
+      RCM: parseFloat(getFormVal('invoice-details-edit-form', 'inv_RCM') || 0)
+    };
+    sendSheetUpdate('invoice', invNumber, invoiceFields);
+  }
+
+  if (purchase) {
+    const purchaseFields = {
+      party_inv_no: overridePurNo,
+      party_inv_date: getFormVal('purchase-details-edit-form', 'pur_party_inv_date'),
+      party_name: getFormVal('purchase-details-edit-form', 'pur_party_name'),
+      expense_acc_name: getFormVal('purchase-details-edit-form', 'pur_expense_acc_name'),
+      sub_acc_name: getFormVal('purchase-details-edit-form', 'pur_sub_acc_name'),
+      service_acc_name: getFormVal('purchase-details-edit-form', 'pur_service_acc_name'),
+      sac_code: getFormVal('purchase-details-edit-form', 'pur_sac_code'),
+      bill_freight_val: parseFloat(getFormVal('purchase-details-edit-form', 'pur_bill_freight_val') || 0),
+      st_charges: parseFloat(getFormVal('purchase-details-edit-form', 'pur_st_charges') || 0),
+      taxable_value: parseFloat(getFormVal('purchase-details-edit-form', 'pur_taxable_value') || 0),
+      net_payable: parseFloat(getFormVal('purchase-details-edit-form', 'pur_net_payable') || 0),
+      tds_percent: parseFloat(getFormVal('purchase-details-edit-form', 'pur_tds_percent') || 0),
+      rcm: parseFloat(getFormVal('purchase-details-edit-form', 'pur_rcm') || 0),
+      total_invoice_value: parseFloat(getFormVal('purchase-details-edit-form', 'pur_total_invoice_value') || 0),
+      ai_summary: getFormVal('purchase-details-edit-form', 'pur_ai_summary'),
+      project: getFormVal('purchase-details-edit-form', 'pur_project'),
+      project_code: getFormVal('purchase-details-edit-form', 'pur_project_code'),
+      deparment: getFormVal('purchase-details-edit-form', 'pur_deparment'),
+      deperment_code: getFormVal('purchase-details-edit-form', 'pur_deperment_code'),
+      tax_critaria: getFormVal('purchase-details-edit-form', 'pur_tax_critaria'),
+      tax_critaria_name: getFormVal('purchase-details-edit-form', 'pur_tax_critaria_name')
+    };
+    sendSheetUpdate('purchase', invNumber, purchaseFields);
   }
 
   saveToLocalStorage();
@@ -2629,6 +2854,59 @@ function saveDetailFormOverrides() {
   // Re-open/refresh modal
   openDetailedRecordModal(state.selectedRecordId);
   renderAllViews();
+}
+
+async function sendSheetUpdate(type, partyInvNo, fields) {
+  if (!partyInvNo) return;
+  
+  const mappedUpdates = {};
+  Object.entries(fields).forEach(([key, val]) => {
+    let mappedKey = key;
+    if (type === 'purchase') {
+      if (key === 'st_charges') mappedKey = 'total_st_charges';
+    } else if (type === 'invoice') {
+      if (key === 'invoice_number') mappedKey = 'party_inv_no';
+    }
+    mappedUpdates[mappedKey] = val;
+  });
+
+  const payload = {
+    sheetName: type === 'invoice' ? 'Invoice_Items' : 'Purchase_data',
+    searchColumn: 'party_inv_no',
+    searchValue: partyInvNo,
+    updates: mappedUpdates
+  };
+
+  console.log(`Sending sheet update for ${type}:`, payload);
+
+  try {
+    const res = await fetch(`${SERVER_BASE_URL}/api/update-record`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const result = await res.json();
+    if (result.success || result.status === 'success') {
+      showToast("Spreadsheet updated successfully!", "success");
+    } else {
+      throw new Error(result.message || 'unknown response');
+    }
+  } catch (e) {
+    console.warn("Server proxy failed, trying direct browser writeback:", e);
+    try {
+      const directUrl = 'https://script.google.com/macros/s/AKfycbz7nbrvyjN39_D4eTDDB9A9nKS4hhLkcMXFoYT6WUxCDt9NGn1fBGBsavi6Sku1Ze3G/exec';
+      await fetch(directUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload)
+      });
+      showToast("Spreadsheet updated directly!", "success");
+    } catch (directError) {
+      console.error("Direct update fallback failed:", directError);
+      showToast("Could not sync edit to Google Sheets.", "warning");
+    }
+  }
 }
 
 async function deleteActiveRecord() {
@@ -2806,6 +3084,36 @@ function submitNewManualRecord() {
   state.purchases.push(newPur);
 
   saveToLocalStorage();
+
+  // Call Google Sheets writeback for both invoice and purchase manually created records
+  sendSheetUpdate('invoice', invoiceNumber, {
+    invoice_number: invoiceNumber,
+    invoice_date: formData.get('invoice_date'),
+    party_name: partyName,
+    buyer_name: formData.get('buyer_name'),
+    transporter_name: partyName,
+    lorry_vehicle_no: formData.get('lorry_vehicle_no'),
+    bill_freight_val: parseFloat(formData.get('bill_freight_val') || 0),
+    net_payable: parseFloat(formData.get('net_payable') || 0),
+    RCM: parseFloat(formData.get('RCM') || 0)
+  });
+
+  sendSheetUpdate('purchase', invoiceNumber, {
+    party_inv_no: invoiceNumber,
+    party_inv_date: formData.get('invoice_date'),
+    party_name: partyName,
+    tnature: formData.get('tnature'),
+    expense_acc_name: formData.get('expense_acc_name'),
+    sub_acc_name: formData.get('sub_acc_name'),
+    service_acc_name: formData.get('service_acc_name'),
+    sac_code: formData.get('sac_code'),
+    bill_freight_val: parseFloat(formData.get('bill_freight_val') || 0),
+    taxable_value: parseFloat(formData.get('taxable_value') || 0),
+    tds_percent: parseFloat(formData.get('tds_percent') || 0),
+    net_payable: parseFloat(formData.get('net_payable') || 0),
+    rcm: parseFloat(formData.get('RCM') || 0)
+  });
+
   showToast(`Record ${invoiceNumber} created!`, "success");
 
   // Close & reset
