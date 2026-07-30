@@ -1222,14 +1222,52 @@ textarea.form-control {
 
 /* Inline Cell Editor Input Styles */
 .cell-inline-input {
-  background-color: var(--bg-darker);
-  border: 1px solid var(--accent-purple);
-  color: var(--text-main);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  width: 100%;
+  background-color: var(--bg-card) !important;
+  border: 2px solid var(--accent-purple) !important;
+  color: var(--text-highlight) !important;
+  padding: 6px 12px !important;
+  border-radius: var(--radius-md) !important;
+  min-width: 150px !important;
+  width: auto !important;
   font-family: inherit;
-  font-size: inherit;
+  font-size: 0.9rem !important;
+  font-weight: 600 !important;
+  box-shadow: 0 0 10px rgba(157, 78, 221, 0.4) !important;
+  box-sizing: border-box;
+}
+
+.editable-cell {
+  position: relative;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.editable-cell:hover {
+  background-color: rgba(157, 78, 221, 0.08) !important;
+}
+
+.badge-danger-outline {
+  background: rgba(255, 77, 109, 0.08) !important;
+  border: 1px solid var(--accent-red) !important;
+  color: var(--accent-red) !important;
+}
+
+.badge-warning-outline {
+  background: rgba(247, 127, 0, 0.08) !important;
+  border: 1px solid var(--accent-orange) !important;
+  color: var(--accent-orange) !important;
+}
+
+.badge-info-outline {
+  background: rgba(0, 180, 216, 0.08) !important;
+  border: 1px solid var(--accent-blue) !important;
+  color: var(--accent-blue) !important;
+}
+
+.badge-success-outline {
+  background: rgba(6, 214, 160, 0.08) !important;
+  border: 1px solid var(--accent-green) !important;
+  color: var(--accent-green) !important;
 }
 
 /* Drag and Drop PDF Dropzone Styles */

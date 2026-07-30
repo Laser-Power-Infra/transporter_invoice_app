@@ -92,9 +92,10 @@
           <i data-lucide="upload-cloud"></i>
           <span>Upload Center</span>
         </a>
-        <a href="#" class="menu-item" data-tab="settings">
-          <i data-lucide="settings"></i>
-          <span>Settings</span>
+        <a href="#" class="menu-item" data-tab="audit-logs">
+          <i data-lucide="clipboard-list"></i>
+          <span>Audit Logs & Issues</span>
+          <span class="badge badge-danger" id="system-issues-count-badge" style="display:none;">0</span>
         </a>
       </nav>
 
@@ -110,6 +111,9 @@
           <button class="btn btn-icon-only btn-secondary" id="theme-toggle-btn" title="Toggle Theme">
             <i data-lucide="sun" class="sun-icon"></i>
             <i data-lucide="moon" class="moon-icon"></i>
+          </button>
+          <button class="btn btn-icon-only btn-secondary" id="sidebar-settings-toggle-btn" title="Toggle Settings">
+            <i data-lucide="settings"></i>
           </button>
           <button class="btn btn-icon-only btn-danger" id="logout-btn" title="Log Out" style="background-color: var(--accent-red-glow); color: var(--accent-red); border-color: rgba(255, 77, 109, 0.2); cursor: pointer;">
             <i data-lucide="log-out"></i>
@@ -548,6 +552,60 @@
             </div>
           </div>
         </div>
+      </section>
+      
+      <!-- Audit Logs & System Issues View -->
+      <section id="tab-audit-logs" class="tab-content">
+        <div class="section-header">
+          <div>
+            <h1>Audit Logs & System Issues</h1>
+            <p class="text-muted">Real-time log of spreadsheet edits, failed requests, and categorized ERP ledger mismatches.</p>
+          </div>
+          <div class="flex-row gap-2">
+            <button class="btn btn-secondary btn-sm" id="clear-audit-logs-btn">
+              <i data-lucide="trash-2"></i>
+              <span>Clear Activity Logs</span>
+            </button>
+          </div>
+        </div>
+
+
+
+        <!-- Issues and Logs Split Layout Grid -->
+        <div class="settings-grid">
+
+          <!-- Real-Time Edit Trail Logs -->
+          <div class="card col-span-2" style="grid-column: span 2; margin-top: 20px;">
+            <div class="card-header flex-header">
+              <div>
+                <h3>Reconciliation Audit Trail</h3>
+                <p class="text-muted">Logs of inline edits, spreadsheet updates, and write errors in this session</p>
+              </div>
+              <div class="flex-row gap-2">
+                <button class="btn btn-secondary btn-xs active" id="btn-log-all">All</button>
+                <button class="btn btn-secondary btn-xs" id="btn-log-success">Success</button>
+                <button class="btn btn-secondary btn-xs" id="btn-log-fail">Fails</button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Action</th>
+                    <th>Record Type</th>
+                    <th>Identifier</th>
+                    <th>Changes / Details</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="audit-logs-tbody">
+                  <!-- Logs list loaded dynamically -->
+                  <tr><td colspan="6" class="text-center text-muted">No logs recorded yet in this session.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 

@@ -15,7 +15,8 @@ let state = {
     invoiceCount: 0,
     purchaseCount: 0
   },
-  deletedInvoices: [] // Track deleted invoice numbers to ignore them during synchronization
+  deletedInvoices: [], // Track deleted invoice numbers to ignore them during synchronization
+  auditLogs: [] // Local log of edits, successes, and sheet-push failures
 };
 
 const SERVER_BASE_URL = import.meta.env.VITE_SERVER_BASE_URL || `http://${window.location.hostname}:4000`;
@@ -293,8 +294,11 @@ function loadLocalDatabase() {
   const cachedPurchases = localStorage.getItem('db_purchases');
   const cachedDashboardStats = localStorage.getItem('db_dashboard_stats');
   const cachedUploadedPdfs = localStorage.getItem('db_uploaded_pdfs');
+  const cachedAuditLogs = localStorage.getItem('db_audit_logs');
+  
   state.deletedInvoices = JSON.parse(localStorage.getItem('db_deleted_invoices') || '[]');
   state.uploadedPdfs = JSON.parse(cachedUploadedPdfs || '[]');
+  state.auditLogs = JSON.parse(cachedAuditLogs || '[]');
 
   if (cachedInvoices && cachedPurchases) {
     state.invoices = JSON.parse(cachedInvoices).filter(inv => !state.deletedInvoices.includes(inv.invoice_number));
@@ -325,6 +329,7 @@ function saveToLocalStorage() {
   localStorage.setItem('db_dashboard_stats', JSON.stringify(state.dashboardStats));
   localStorage.setItem('db_deleted_invoices', JSON.stringify(state.deletedInvoices));
   localStorage.setItem('db_uploaded_pdfs', JSON.stringify(state.uploadedPdfs));
+  localStorage.setItem('db_audit_logs', JSON.stringify(state.auditLogs));
 }
 
 // === LOCAL OVERRIDES SYSTEM ===
@@ -777,6 +782,7 @@ function renderAllViews() {
   renderPurchasesLedger();
   renderReconciliation();
   renderUploadCenter();
+  renderAuditLogsView();
 }
 
 function renderUploadCenter() {
@@ -1732,6 +1738,7 @@ function makeCellEditable(cell) {
       }).then(res => res.json()).then(result => {
         if (result.success || result.status === 'success') {
           showToast("Spreadsheet updated successfully!", "success");
+          logAuditEntry('Inline Edit Item', 'line_item', searchVal, `Changed ${fieldName} from "${originalValue}" to "${newVal}"`, 'SUCCESS');
         } else {
           throw new Error();
         }
@@ -1742,6 +1749,10 @@ function makeCellEditable(cell) {
           mode: 'no-cors',
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify(payload)
+        }).then(() => {
+          logAuditEntry('Inline Edit Item (Direct)', 'line_item', searchVal, `Changed ${fieldName} from "${originalValue}" to "${newVal}"`, 'SUCCESS');
+        }).catch(error => {
+          logAuditEntry('Inline Edit Item', 'line_item', searchVal, `Failed to update ${fieldName} via direct fetch: ${error.message}`, 'ERROR');
         });
         showToast("Spreadsheet updated directly!", "success");
       });
@@ -1750,6 +1761,7 @@ function makeCellEditable(cell) {
       sendSheetUpdate(recordType, (fieldName === 'invoice_number' || fieldName === 'party_inv_no') ? oldVal : partyInvNo, {
         [fieldName]: newVal
       }, record);
+      logAuditEntry('Inline Edit', recordType, partyInvNo, `Changed ${fieldName} from "${originalValue}" to "${newVal}"`, 'SUCCESS');
     }
     
     // Reset view
@@ -3016,6 +3028,7 @@ function saveDetailFormOverrides() {
       RCM: parseFloat(getFormVal('invoice-details-edit-form', 'inv_RCM') || 0)
     };
     sendSheetUpdate('invoice', invNumber, invoiceFields, invoice);
+    logAuditEntry('Modal Form Save', 'invoice', overrideInvNo, 'Updated invoice details from modal edit form', 'SUCCESS');
   }
 
   if (purchase) {
@@ -3043,6 +3056,7 @@ function saveDetailFormOverrides() {
       tax_critaria_name: getFormVal('purchase-details-edit-form', 'pur_tax_critaria_name')
     };
     sendSheetUpdate('purchase', invNumber, purchaseFields, purchase);
+    logAuditEntry('Modal Form Save', 'purchase', overridePurNo, 'Updated purchase details from modal edit form', 'SUCCESS');
   }
 
   saveToLocalStorage();
@@ -4358,3 +4372,245 @@ function renderRichAiSummary(rawSummary) {
   html += `</div>`;
   return html;
 }
+
+// ==========================================================================
+// AUDIT LOGS & CLASSIFIED SYSTEM ISSUES ENGINE
+// ==========================================================================
+
+// Global logger helper
+function logAuditEntry(action, type, identifier, details, status = 'SUCCESS') {
+  const newEntry = {
+    timestamp: new Date().toLocaleTimeString() + ' ' + new Date().toLocaleDateString(),
+    action: action,
+    type: type,
+    identifier: identifier,
+    details: details,
+    status: status
+  };
+  state.auditLogs.unshift(newEntry);
+  // Cap session logs size
+  if (state.auditLogs.length > 200) state.auditLogs.pop();
+  saveToLocalStorage();
+  
+  // Re-render if logs tab is active
+  if (state.activeTab === 'audit-logs') {
+    renderAuditLogsView();
+  }
+}
+
+// Compute active system issues categorized as requested
+function calculateSystemIssues() {
+  const issues = [];
+  const processedInvs = new Set();
+
+  // 1. Party mismatch ("Party Wrong") - Crucial fields mismatch between sheets
+  const reconData = calculateReconciliationData();
+  reconData.forEach(r => {
+    if (r.status === 'MISMATCH') {
+      issues.push({
+        invoice_number: r.invoice_number,
+        party_name: r.party_name,
+        category: 'Party wrong',
+        details: r.notes,
+        badgeClass: 'badge-danger-outline'
+      });
+      processedInvs.add(r.invoice_number);
+    }
+  });
+
+  // 2. Missing ERP values ("EPR Data Wrong") - Empty/null important values in ERP fields
+  state.purchases.forEach(pur => {
+    const invNo = pur.party_inv_no;
+    if (!invNo) return;
+
+    // Check if the AI validation summary contains warnings about missing party or missing vehicle number.
+    // If so, it classifies as "Party wrong" (mismatch of supplier/vehicle parameters).
+    const summaryText = (pur.ai_summary || '').toLowerCase();
+    const hasPartyOrVehicleWarning = summaryText.includes('vehicle number not provided') || 
+                                     summaryText.includes('vehicle number mismatch') ||
+                                     summaryText.includes('party mismatch') ||
+                                     summaryText.includes('party wrong') ||
+                                     summaryText.includes('supplier mismatch') ||
+                                     summaryText.includes('transporter mismatch');
+
+    if (hasPartyOrVehicleWarning && !processedInvs.has(invNo)) {
+      // Find details of the warning
+      let warnDetail = 'Party or vehicle parameter mismatch';
+      const warnIdx = summaryText.indexOf('warnings:');
+      if (warnIdx !== -1) {
+        const afterWarn = pur.ai_summary.substring(warnIdx + 9).trim();
+        const firstLine = afterWarn.split('\n')[0].replace(/^[•\-\*\s]+/, '').trim();
+        if (firstLine && !firstLine.toLowerCase().startsWith('none')) {
+          warnDetail = firstLine;
+        }
+      }
+      issues.push({
+        invoice_number: invNo,
+        party_name: pur.party_name || 'Unknown Partner',
+        category: 'Party wrong',
+        details: warnDetail,
+        badgeClass: 'badge-danger-outline'
+      });
+      processedInvs.add(invNo);
+      return;
+    }
+
+    const missingFields = [];
+    if (!pur.project || pur.project === '-' || String(pur.project).trim() === '') missingFields.push('Project');
+    if (!pur.deparment || pur.deparment === '-' || String(pur.deparment).trim() === '') missingFields.push('Department');
+    if (!pur.tax_critaria_name || pur.tax_critaria_name === '-' || String(pur.tax_critaria_name).trim() === '') missingFields.push('Tax Criteria');
+    if (!pur.expense_acc_name || pur.expense_acc_name === '-' || String(pur.expense_acc_name).trim() === '') missingFields.push('Expense Account');
+    
+    if (missingFields.length > 0 && !processedInvs.has(invNo)) {
+      issues.push({
+        invoice_number: invNo,
+        party_name: pur.party_name || 'Unknown Partner',
+        category: 'EPR Data Wrong',
+        details: `Missing ERP fields: ${missingFields.join(', ')}`,
+        badgeClass: 'badge-warning-outline'
+      });
+      processedInvs.add(invNo);
+    }
+  });
+
+  // 3. Validation failures ("System Wrong") - validation errors in raw details
+  state.purchases.forEach(pur => {
+    const invNo = pur.party_inv_no;
+    if (!invNo || processedInvs.has(invNo)) return;
+
+    // Check if it has actual FAILED errors (not just WARNINGS)
+    if (hasValidationFailures(pur)) {
+      const summaryText = (pur.ai_summary || '').toLowerCase();
+      let extractedFail = 'Validation failures';
+      const failedIdx = summaryText.indexOf('failed:');
+      if (failedIdx !== -1) {
+        extractedFail = pur.ai_summary.substring(failedIdx + 7).split('\n')[0].trim();
+        if (extractedFail.toLowerCase().startsWith('none') || extractedFail === '-') return;
+      }
+      issues.push({
+        invoice_number: invNo,
+        party_name: pur.party_name || 'Unknown Partner',
+        category: 'System Wrong',
+        details: extractedFail,
+        badgeClass: 'badge-info-outline'
+      });
+    }
+  });
+
+  return issues;
+}
+
+// Render issues KPI, lists, and real-time logs table
+function renderAuditLogsView() {
+  // 1. Show discrepancy badge counter next to sidebar item
+  const sidebarCountBadge = document.getElementById('system-issues-count-badge');
+  if (sidebarCountBadge) {
+    const issues = calculateSystemIssues();
+    const totalIssues = issues.length;
+    if (totalIssues > 0) {
+      sidebarCountBadge.textContent = totalIssues;
+      sidebarCountBadge.style.display = 'inline-block';
+    } else {
+      sidebarCountBadge.style.display = 'none';
+    }
+  }
+
+
+  // 2. Render audit logs activity list
+  const logsTbody = document.getElementById('audit-logs-tbody');
+  if (logsTbody) {
+    logsTbody.innerHTML = '';
+    const activeLogFilter = document.querySelector('[id^="btn-log-"].active');
+    const logFilterId = activeLogFilter ? activeLogFilter.id : 'btn-log-all';
+
+    const filteredLogs = state.auditLogs.filter(log => {
+      if (logFilterId === 'btn-log-success') return log.status === 'SUCCESS';
+      if (logFilterId === 'btn-log-fail') return log.status === 'ERROR';
+      return true;
+    });
+
+    if (filteredLogs.length === 0) {
+      logsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No logs matching selected category filter.</td></tr>`;
+    } else {
+      filteredLogs.forEach(log => {
+        const tr = document.createElement('tr');
+        const badgeClass = log.status === 'SUCCESS' ? 'badge-success-outline' : 'badge-danger-outline';
+        tr.innerHTML = `
+          <td style="color:var(--text-muted); font-size:0.8rem; font-family:monospace;">${escapeHtml(log.timestamp)}</td>
+          <td><strong>${escapeHtml(log.action)}</strong></td>
+          <td><span class="badge badge-purple">${escapeHtml(log.type)}</span></td>
+          <td><span class="badge badge-info-outline" style="font-family:monospace;">${escapeHtml(log.identifier)}</span></td>
+          <td style="font-size:0.85rem; max-width:240px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(log.details)}">${escapeHtml(log.details)}</td>
+          <td><span class="badge ${badgeClass}">${escapeHtml(log.status)}</span></td>
+        `;
+        logsTbody.appendChild(tr);
+      });
+    }
+  }
+}
+
+// Bind audit logs UI button handlers
+document.addEventListener('DOMContentLoaded', () => {
+  const issuesSearch = document.getElementById('audit-issues-search');
+  if (issuesSearch) {
+    issuesSearch.addEventListener('input', renderAuditLogsView);
+  }
+
+  // Clear logs button
+  const clearLogsBtn = document.getElementById('clear-audit-logs-btn');
+  if (clearLogsBtn) {
+    clearLogsBtn.addEventListener('click', () => {
+      if (confirm('Clear audit activity logs list?')) {
+        state.auditLogs = [];
+        saveToLocalStorage();
+        renderAuditLogsView();
+      }
+    });
+  }
+
+  // Filter tabs
+  const logTabs = ['btn-log-all', 'btn-log-success', 'btn-log-fail'];
+  logTabs.forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        logTabs.forEach(t => {
+          const el = document.getElementById(t);
+          if (el) el.classList.remove('active');
+        });
+        btn.classList.add('active');
+        renderAuditLogsView();
+      });
+    }
+  });
+
+  // Settings toggle button click listener
+  const settingsBtn = document.getElementById('sidebar-settings-toggle-btn');
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      // Toggle display of settings tab
+      const isSettingsActive = state.activeTab === 'settings';
+      const targetTab = isSettingsActive ? 'dashboard' : 'settings';
+      
+      // Update state
+      state.activeTab = targetTab;
+      
+      // Toggle sidebar focuses
+      document.querySelectorAll('.menu-item').forEach(item => {
+        item.classList.remove('active');
+        if (!isSettingsActive && item.dataset.tab === 'settings') {
+          item.classList.add('active');
+        } else if (isSettingsActive && item.dataset.tab === 'dashboard') {
+          item.classList.add('active');
+        }
+      });
+
+      // Toggle active tab content pane
+      document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+      const activePanel = document.getElementById(`tab-${targetTab}`);
+      if (activePanel) activePanel.classList.add('active');
+
+      renderAllViews();
+    });
+  }
+});
