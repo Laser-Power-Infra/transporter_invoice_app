@@ -15,7 +15,6 @@ let state = {
     invoiceCount: 0,
     purchaseCount: 0
   },
-  deletedInvoices: [], // Track deleted invoice numbers to ignore them during synchronization
   auditLogs: [] // Local log of edits, successes, and sheet-push failures
 };
 
@@ -163,8 +162,7 @@ function initApp() {
   // Check auth
   const isAuthed = checkAuth();
   if (isAuthed) {
-    // Load metadata only (deleted invoices, uploaded PDFs)
-    state.deletedInvoices = JSON.parse(localStorage.getItem('db_deleted_invoices') || '[]');
+    // Load metadata only (uploaded PDFs)
     state.uploadedPdfs = JSON.parse(localStorage.getItem('db_uploaded_pdfs') || '[]');
 
     // Show loading indicator while fetching from server
@@ -296,13 +294,12 @@ function loadLocalDatabase() {
   const cachedUploadedPdfs = localStorage.getItem('db_uploaded_pdfs');
   const cachedAuditLogs = localStorage.getItem('db_audit_logs');
   
-  state.deletedInvoices = JSON.parse(localStorage.getItem('db_deleted_invoices') || '[]');
   state.uploadedPdfs = JSON.parse(cachedUploadedPdfs || '[]');
   state.auditLogs = JSON.parse(cachedAuditLogs || '[]');
 
   if (cachedInvoices && cachedPurchases) {
-    state.invoices = JSON.parse(cachedInvoices).filter(inv => !state.deletedInvoices.includes(inv.invoice_number));
-    state.purchases = JSON.parse(cachedPurchases).filter(pur => !state.deletedInvoices.includes(pur.party_inv_no));
+    state.invoices = JSON.parse(cachedInvoices);
+    state.purchases = JSON.parse(cachedPurchases);
     state.dashboardStats = JSON.parse(cachedDashboardStats || '{}');
 
     if (!state.dashboardStats || !state.dashboardStats.invoiceCount) {
@@ -327,7 +324,6 @@ function saveToLocalStorage() {
   localStorage.setItem('db_invoices', JSON.stringify(state.invoices));
   localStorage.setItem('db_purchases', JSON.stringify(state.purchases));
   localStorage.setItem('db_dashboard_stats', JSON.stringify(state.dashboardStats));
-  localStorage.setItem('db_deleted_invoices', JSON.stringify(state.deletedInvoices));
   localStorage.setItem('db_uploaded_pdfs', JSON.stringify(state.uploadedPdfs));
   localStorage.setItem('db_audit_logs', JSON.stringify(state.auditLogs));
 }
@@ -514,19 +510,9 @@ function processRawData(data) {
   };
 
   // Filter out any records that are marked as deleted in our local state
-  const rawInvoices = (data.invoices || []).filter(inv => {
-    let parsedArray = {};
-    try {
-      if (inv.array) parsedArray = JSON.parse(inv.array);
-    } catch {}
-    const invNo = parsedArray.invoice_number || inv.invoice_number || inv.party_inv_no || inv.our_bill_no || '';
-    return !state.deletedInvoices.includes(invNo);
-  });
+  const rawInvoices = (data.invoices || []);
 
-  const rawPurchases = (data.purchases || []).filter(pur => {
-    const purNo = pur.party_inv_no || '';
-    return !state.deletedInvoices.includes(purNo);
-  });
+  const rawPurchases = (data.purchases || []);
 
   // Process Invoices
   state.invoices = rawInvoices.map((inv, idx) => {
@@ -3166,9 +3152,7 @@ async function deleteInvoiceRecord(target) {
       state.invoices = state.invoices.filter(i => i.invoice_number !== invoiceNumber);
       state.purchases = state.purchases.filter(p => p.party_inv_no !== invoiceNumber);
 
-      if (!state.deletedInvoices.includes(invoiceNumber)) {
-        state.deletedInvoices.push(invoiceNumber);
-      }
+
 
       saveToLocalStorage();
       
@@ -3229,9 +3213,10 @@ async function validateActiveBill() {
     purchase.validated = true;
     purchase.validation_timestamp = nowStr;
     if (purchase.ai_summary) {
+      // Overwrite the failed section entirely to ensure 'Failed:\nNone (Manually Validated)' in the sheet (db)
       purchase.ai_summary = purchase.ai_summary
         .replace(/Status:\s*FAILED/i, 'Status: PASSED')
-        .replace(/^Failed:[\s\S]*?^={2,}/m, 'Failed:\nNone\n\n====================================')
+        .replace(/Failed:\s*[\s\S]*?(Warnings:|$)/i, 'Failed:\nNone (Manually Validated)\n\n$1')
         .replace(/\bfailed\s*:\s*\d+\b/i, 'Failed: 0')
         .replace(/✖/g, '✔');
     }
