@@ -686,7 +686,15 @@ function processRawData(data) {
         if (partyInvNo === 'K/001152/2026-27') {
           pDate = '2026-07-11';
         }
-        return pDate;
+        
+        // Align purchase posting date with invoice date if a matching invoice exists
+        const cleanPartyInvNo = String(partyInvNo).trim().toLowerCase();
+        const matchInv = state.invoices.find(i => String(i.invoice_number).trim().toLowerCase() === cleanPartyInvNo);
+        if (matchInv && matchInv.invoice_date) {
+          pDate = matchInv.invoice_date;
+        }
+        
+        return normalizeToISODate(pDate);
       })(),
       party_name: pur.party_name || parsedArray.transporter_name || parsedArray.buyer_name || '',
       party_code: pur.party_code || '',
