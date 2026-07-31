@@ -533,7 +533,7 @@ function processRawData(data) {
       console.log('parsedArray:', parsedArray);
       console.log('line_items from server:', parsedArray.line_items);
     }
-    const invoiceDate = parsedArray.invoice_date || inv.invoice_date || inv.party_inv_date || '';
+    const invoiceDate = normalizeToISODate(parsedArray.invoice_date || inv.invoice_date || inv.party_inv_date || '');
     const partyName = inv.party_name || parsedArray.party_name || parsedArray.transporter_name || '';
     const billFreightVal = parseNumericValue(inv.bill_freight_val ?? parsedArray.bill_freight_val ?? 0);
     const netPayable = parseNumericValue(inv.net_payable ?? parsedArray.net_payable ?? inv.final_val_after_deduction ?? parsedArray.final_val_after_deduction ?? 0);
@@ -565,10 +565,18 @@ function processRawData(data) {
       rawFoRate = Math.round(rawFoOrderVal / rawFoQty);
     }
 
+    // Resolve lrDate correctly bypassing Google Sheets US locale date parsing errors
+    let lrDate = '';
+    if (parsedArray.line_items && parsedArray.line_items.length > 0 && parsedArray.line_items[0].date) {
+      lrDate = normalizeToISODate(parsedArray.line_items[0].date);
+    } else if (inv.lr_date) {
+      lrDate = normalizeToISODate(inv.lr_date);
+    }
+
     return {
       id: `inv-${(invoiceNumber || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}`,
       invoice_number: invoiceNumber,
-      invoice_date: invoiceDate ? invoiceDate.split('T')[0] : '',
+      invoice_date: invoiceDate,
       party_name: partyName,
       party_code: parsedArray.party_code || inv.party_code || '',
       party_slno: parsedArray.party_slno || inv.party_slno || '',
@@ -596,7 +604,7 @@ function processRawData(data) {
       fo_order_value: rawFoOrderVal,
       our_bill_no: inv.our_bill_no || parsedArray.our_invoice_number || '',
       cn_lr_no: inv.cn_lr_no || '',
-      lr_date: inv.lr_date ? inv.lr_date.split('T')[0] : '',
+      lr_date: lrDate,
       expense_acc_code: parsedArray.expense_acc_code || inv.expense_acc_code || '',
       expense_acc_name: parsedArray.expense_acc_name || inv.expense_acc_name || '',
       sub_acc_code: parsedArray.sub_acc_code || inv.sub_acc_code || '',
@@ -1958,12 +1966,12 @@ function buildERPRowsView(invoice, purchase) {
       "TRANSPORTER NAME": pur.party_name || inv.party_name || inv.transporter_name || '-',
       "FO NO": item.fo_no || inv.fo_no || pur.fo_no || '-',
       "OUR INVOICE NUMBER": item.our_invoice_number || ourInvoiceNo || '-',
-      "CN/LR NO": inv.cn_lr_no || pur.cn_lr_no || item.lr_no || '-',
-      "CN/LR DATE": formatDateToDDMMYYYY(inv.lr_date || pur.party_inv_date || item.date),
+      "CN/LR NO": item.lr_no || inv.cn_lr_no || pur.cn_lr_no || '-',
+      "CN/LR DATE": formatDateToDDMMYYYY(item.date || inv.lr_date || pur.party_inv_date),
       "PARTY INVOICE NUMBER(BILL NO)": pur.party_inv_no || inv.party_inv_no || '-',
       "PARTY INVOICE DATE (BILL DATE)": formatDateToDDMMYYYY(pur.party_inv_date || inv.invoice_date),
-      "LORRY NO OR VECHILE NO": inv.lorry_vehicle_no || pur.lorry_vehicle_no || item.truck_no || '-',
-      "FREIGHT VALUE": inv.bill_freight_val ?? pur.bill_freight_val ?? item.freight ?? 0,
+      "LORRY NO OR VECHILE NO": item.truck_no || inv.lorry_vehicle_no || pur.lorry_vehicle_no || '-',
+      "FREIGHT VALUE": item.freight ?? inv.bill_freight_val ?? pur.bill_freight_val ?? 0,
       "ST CHARGES": pur.st_charges || inv.st_charges || 0,
       "Invoice Value (₹)": pur.net_payable || inv.net_payable || 0
     };
@@ -2378,13 +2386,13 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
       const invoiceIdAttr = invoice ? invoice.id : '';
 
       tr.innerHTML = `
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="date" title="Double click to edit"` : ''}>${formatDateToDDMMYYYY(invoice.lr_date || item.date)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="date" title="Double click to edit"` : ''}>${formatDateToDDMMYYYY(item.date || invoice.lr_date)}</td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="our_invoice_number" title="Double click to edit"` : ''}><span class="badge badge-purple" style="font-family: monospace; font-size: 0.75rem;">${escapeHtml(item.our_invoice_number || invoiceNumber || '-')}</span></td>
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="truck_no" title="Double click to edit"` : ''}><strong>${escapeHtml(invoice.lorry_vehicle_no || item.truck_no || '-')}</strong></td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="truck_no" title="Double click to edit"` : ''}><strong>${escapeHtml(item.truck_no || invoice.lorry_vehicle_no || '-')}</strong></td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="fo_no" title="Double click to edit"` : ''}>${(!item.fo_no || item.fo_no === '-') ? '<span style="color: var(--accent-red); font-weight: 600;" title="FO Number not tracked - Please re-upload document">- (Re-upload)</span>' : escapeHtml(item.fo_no)}</td>
         <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="description" title="Double click to edit"` : ''}>${escapeHtml(item.description || '-')}</td>
-        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="lr_no" title="Double click to edit"` : ''}>${escapeHtml(invoice.cn_lr_no || item.lr_no || '-')}</td>
-        <td class="text-right ${isEditable ? 'editable-cell' : ''}" ${isEditable ? `data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="freight" title="Double click to edit"` : ''}>${formatCurrency(invoice.bill_freight_val ?? item.freight ?? 0)}</td>
+        <td ${isEditable ? `class="editable-cell" data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="lr_no" title="Double click to edit"` : ''}>${escapeHtml(item.lr_no || invoice.cn_lr_no || '-')}</td>
+        <td class="text-right ${isEditable ? 'editable-cell' : ''}" ${isEditable ? `data-type="line_item" data-invoice-id="${invoiceIdAttr}" data-line-index="${lineIndex}" data-field="freight" title="Double click to edit"` : ''}>${formatCurrency(item.freight ?? invoice.bill_freight_val ?? 0)}</td>
       `;
 
       tr.querySelectorAll('.editable-cell').forEach(cell => {
