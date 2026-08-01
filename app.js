@@ -18,6 +18,15 @@ let state = {
   auditLogs: [] // Local log of edits, successes, and sheet-push failures
 };
 
+// Records whose array JSON was already repaired (persisted so each record is repaired once)
+function getRepairedKeys() {
+  try { return new Set(JSON.parse(localStorage.getItem('db_synced_array_keys') || '[]')); }
+  catch (e) { return new Set(); }
+}
+function saveRepairedKeys(set) {
+  try { localStorage.setItem('db_synced_array_keys', JSON.stringify([...set])); } catch (e) {}
+}
+
 const SERVER_BASE_URL = import.meta.env.VITE_SERVER_BASE_URL || `http://${window.location.hostname}:4000`;
 
 // Authentication Constants (Static Credentials)
@@ -218,6 +227,9 @@ async function fetchAndRefresh() {
 
       // Re-render all views with fresh data
       renderAllViews();
+
+      // Repair stale array JSON columns in the background (rate-limited, once per record)
+      scheduleSelfHeal();
     } else {
       throw new Error('Server returned unsuccessful payload');
     }
@@ -235,15 +247,15 @@ function cleanupExpiredLocalPdfs() {
   const now = Date.now();
   let countExpired = 0;
 
+  // Only temporary blob: URLs expire. Persistent Drive/HTTP links are kept forever.
   if (state.uploadedPdfs && Array.isArray(state.uploadedPdfs)) {
     const validPdfs = [];
     state.uploadedPdfs.forEach(pdf => {
       const uploadTime = new Date(pdf.uploadedAt || pdf.timestamp || 0).getTime();
-      if (uploadTime > 0 && (now - uploadTime) > TEN_DAYS_MS) {
+      const isBlob = pdf.url && pdf.url.startsWith('blob:');
+      if (isBlob && uploadTime > 0 && (now - uploadTime) > TEN_DAYS_MS) {
         countExpired++;
-        if (pdf.url && pdf.url.startsWith('blob:')) {
-          try { URL.revokeObjectURL(pdf.url); } catch (e) {}
-        }
+        try { URL.revokeObjectURL(pdf.url); } catch (e) {}
       } else {
         validPdfs.push(pdf);
       }
@@ -252,38 +264,28 @@ function cleanupExpiredLocalPdfs() {
   }
 
   state.invoices = state.invoices.map(inv => {
-    if (inv.pdf_uploaded_at) {
-      const ageMs = now - new Date(inv.pdf_uploaded_at).getTime();
-      if (ageMs > TEN_DAYS_MS) {
-        if (inv.pdf_url && inv.pdf_url.startsWith('blob:')) {
-          try { URL.revokeObjectURL(inv.pdf_url); } catch (e) {}
-        }
-        inv.pdf_url = '';
-        inv.pdf_uploaded_at = null;
-        countExpired++;
-      }
+    if (inv.pdf_url && inv.pdf_url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(inv.pdf_url); } catch (e) {}
+      inv.pdf_url = '';
+      inv.pdf_uploaded_at = null;
+      countExpired++;
     }
     return inv;
   });
 
   state.purchases = state.purchases.map(pur => {
-    if (pur.pdf_uploaded_at) {
-      const ageMs = now - new Date(pur.pdf_uploaded_at).getTime();
-      if (ageMs > TEN_DAYS_MS) {
-        if (pur.pdf_url && pur.pdf_url.startsWith('blob:')) {
-          try { URL.revokeObjectURL(pur.pdf_url); } catch (e) {}
-        }
-        pur.pdf_url = '';
-        pur.pdf_uploaded_at = null;
-        countExpired++;
-      }
+    if (pur.pdf_url && pur.pdf_url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(pur.pdf_url); } catch (e) {}
+      pur.pdf_url = '';
+      pur.pdf_uploaded_at = null;
+      countExpired++;
     }
     return pur;
   });
 
   if (countExpired > 0) {
     saveToLocalStorage();
-    console.log(`🧹 10-Day Retention Policy: Purged ${countExpired} expired local PDF reference(s).`);
+    console.log(`🧹 10-Day Retention Policy: Purged ${countExpired} expired local blob PDF reference(s).`);
   }
 }
 
@@ -533,16 +535,16 @@ function processRawData(data) {
       console.log('parsedArray:', parsedArray);
       console.log('line_items from server:', parsedArray.line_items);
     }
-    const invoiceDate = normalizeToISODate(parsedArray.invoice_date || inv.invoice_date || inv.party_inv_date || '');
+    const invoiceDate = normalizeToISODate(inv.party_inv_date || inv.invoice_date || parsedArray.invoice_date || '');
     const partyName = inv.party_name || parsedArray.party_name || parsedArray.transporter_name || '';
     const billFreightVal = parseNumericValue(inv.bill_freight_val ?? parsedArray.bill_freight_val ?? 0);
     const netPayable = parseNumericValue(inv.net_payable ?? parsedArray.net_payable ?? inv.final_val_after_deduction ?? parsedArray.final_val_after_deduction ?? 0);
     const totalInvoiceVal = parseNumericValue(inv.total_invoice_value ?? parsedArray.total_invoice_value ?? inv.net_payable ?? parsedArray.net_payable ?? 0);
     let rcmValue = parsePercentValue(inv.RCM ?? inv.rcm ?? parsedArray.RCM ?? parsedArray.rcm ?? 0);
     const stCharges = parseNumericValue(inv.st_charges ?? inv.total_st_charges ?? parsedArray.st_charges ?? parsedArray.total_st_charges ?? 0);
-    let cgstAmount = parseNumericValue(parsedArray.cgst_amount ?? parsedArray.cgst ?? inv.cgst ?? 0);
-    let sgstAmount = parseNumericValue(parsedArray.sgst_amount ?? parsedArray.sgst ?? inv.sgst ?? 0);
-    let igstAmount = parseNumericValue(parsedArray.igst_amount ?? parsedArray.igst ?? inv.igst ?? 0);
+    let cgstAmount = parseNumericValue(inv.cgst ?? parsedArray.cgst_amount ?? parsedArray.cgst ?? 0);
+    let sgstAmount = parseNumericValue(inv.sgst ?? parsedArray.sgst_amount ?? parsedArray.sgst ?? 0);
+    let igstAmount = parseNumericValue(inv.igst ?? parsedArray.igst_amount ?? parsedArray.igst ?? 0);
 
     const totalGst = cgstAmount + sgstAmount + igstAmount;
     const gstRate = billFreightVal > 0 ? (totalGst / billFreightVal) : 0;
@@ -575,21 +577,22 @@ function processRawData(data) {
 
     return {
       id: `inv-${(invoiceNumber || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}`,
+      _rawArray: inv.array || '',
       invoice_number: invoiceNumber,
       invoice_date: invoiceDate,
       party_name: partyName,
-      party_code: parsedArray.party_code || inv.party_code || '',
-      party_slno: parsedArray.party_slno || inv.party_slno || '',
-      party_reg_addr: parsedArray.party_reg_addr || inv.party_reg_addr || '',
-      our_slno: parsedArray.our_slno || inv.our_slno || '',
-      our_reg_addr: parsedArray.our_reg_addr || inv.our_reg_addr || '',
-      buyer_name: parsedArray.buyer_name || inv.buyer_name || '',
-      transporter_name: parsedArray.transporter_name || inv.transporter_name || '',
-      transporter_gstin: parsedArray.transporter_gstin || inv.transporter_gstin || '',
-      to_place_name: parsedArray.to_place_name || inv.to_place_name || '',
-      address: parsedArray.address || inv.address || '',
-      item_name: parsedArray.item_name || inv.item_name || '',
-      drum_qty: parsedArray.drum_qty || inv.drum_qty || '',
+      party_code: inv.party_code || parsedArray.party_code || '',
+      party_slno: inv.party_slno || parsedArray.party_slno || '',
+      party_reg_addr: inv.party_reg_addr || parsedArray.party_reg_addr || '',
+      our_slno: inv.our_slno || parsedArray.our_slno || '',
+      our_reg_addr: inv.our_reg_addr || parsedArray.our_reg_addr || '',
+      buyer_name: inv.buyer_name || parsedArray.buyer_name || '',
+      transporter_name: inv.transporter_name || parsedArray.transporter_name || '',
+      transporter_gstin: inv.transporter_gstin || parsedArray.transporter_gstin || '',
+      to_place_name: inv.to_place_name || parsedArray.to_place_name || '',
+      address: inv.address || parsedArray.address || '',
+      item_name: inv.item_name || parsedArray.item_name || '',
+      drum_qty: inv.drum_qty || parsedArray.drum_qty || '',
       lorry_vehicle_no: inv.lorry_vehicle_no || parsedArray.lorry_vehicle_no || '',
       bill_freight_val: billFreightVal,
       net_payable: netPayable,
@@ -603,21 +606,21 @@ function processRawData(data) {
       fo_qty: rawFoQty,
       fo_order_value: rawFoOrderVal,
       our_bill_no: inv.our_bill_no || parsedArray.our_invoice_number || '',
-      cn_lr_no: inv.cn_lr_no || '',
+      cn_lr_no: inv.cn_lr_no || parsedArray.cn_lr_no || '',
       lr_date: lrDate,
-      expense_acc_code: parsedArray.expense_acc_code || inv.expense_acc_code || '',
-      expense_acc_name: parsedArray.expense_acc_name || inv.expense_acc_name || '',
-      sub_acc_code: parsedArray.sub_acc_code || inv.sub_acc_code || '',
-      sub_acc_name: parsedArray.sub_acc_name || inv.sub_acc_name || '',
-      service_acc_code: parsedArray.service_acc_code || inv.service_acc_code || parsedArray.Service_acc_code || inv.Service_acc_code || '',
-      service_acc_name: parsedArray.service_acc_name || inv.service_acc_name || '',
-      sac_code: parsedArray.sac_code || inv.sac_code || '',
-      series: parsedArray.series || inv.series || '',
-      div_code: parsedArray.div_code || inv.div_code || '',
-      addon_code_str: parsedArray.addon_code_str || inv.addon_code_str || '',
-      stax_code_str: parsedArray.stax_code_str || inv.stax_code_str || '',
+      expense_acc_code: inv.expense_acc_code || parsedArray.expense_acc_code || '',
+      expense_acc_name: inv.expense_acc_name || parsedArray.expense_acc_name || '',
+      sub_acc_code: inv.sub_acc_code || parsedArray.sub_acc_code || '',
+      sub_acc_name: inv.sub_acc_name || parsedArray.sub_acc_name || '',
+      service_acc_code: inv.service_acc_code || parsedArray.service_acc_code || parsedArray.Service_acc_code || inv.Service_acc_code || '',
+      service_acc_name: inv.service_acc_name || parsedArray.service_acc_name || '',
+      sac_code: inv.sac_code || parsedArray.sac_code || '',
+      series: inv.series || parsedArray.series || '',
+      div_code: inv.div_code || parsedArray.div_code || '',
+      addon_code_str: inv.addon_code_str || parsedArray.addon_code_str || '',
+      stax_code_str: inv.stax_code_str || parsedArray.stax_code_str || '',
       line_items: parsedArray.line_items || [],
-      pdf_url: parsedArray.pdf_url || inv.pdf_url || '',
+      pdf_url: extractPdfUrl(inv) || extractPdfUrl(parsedArray),
       total_invoice_value: totalInvoiceVal,
       tax_critaria: inv.tax_critaria || inv.tax_criteria || '',
       project: inv.project || '',
@@ -680,6 +683,7 @@ function processRawData(data) {
 
     return {
       id: `pur-${(partyInvNo || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}-${idx}`,
+      _rawArray: pur.array || '',
       party_inv_no: partyInvNo,
       party_inv_date: (() => {
         let pDate = pur.party_inv_date ? pur.party_inv_date.split('T')[0] : (parsedArray.invoice_date || '');
@@ -727,7 +731,7 @@ function processRawData(data) {
       igst: igstAmount,
       total_gst_value: parseNumericValue(pur.total_gst_value ?? 0),
       ai_summary: pur["AI SUMMRY"] || pur.ai_summary || '',
-      pdf_url: parsedArray.pdf_url || pur.pdf_url || '',
+      pdf_url: extractPdfUrl(pur) || extractPdfUrl(parsedArray),
       fo_no: extractFirstString(pur.fo_no || parsedArray.fo_no || parsedArray.fo_order_number || pur.fo_order_number || pur.FO_NO || ''),
       fo_rate: rawPurFoRate,
       fo_qty: rawPurFoQty,
@@ -766,6 +770,118 @@ function processRawData(data) {
       }
     });
   } catch (e) {}
+}
+
+// Rebuild the sheet's array JSON from the record's preferred (top-level) values.
+// Only invoice-level fields are updated; line_items are preserved as-is.
+function rebuildArrayFromRecord(record) {
+  if (!record || !record._rawArray) return record ? record._rawArray : '';
+  try {
+    const base = JSON.parse(record._rawArray);
+    const fieldMap = {
+      bill_freight_val: 'bill_freight_val',
+      net_payable: 'net_payable',
+      total_invoice_value: 'total_invoice_value',
+      st_charges: 'st_charges',
+      cn_lr_no: 'cn_lr_no',
+      lorry_vehicle_no: 'lorry_vehicle_no',
+      buyer_name: 'buyer_name',
+      transporter_name: 'transporter_name',
+      transporter_gstin: 'transporter_gstin',
+      to_place_name: 'to_place_name',
+      item_name: 'item_name',
+      party_name: 'party_name',
+      party_reg_addr: 'party_reg_addr',
+      our_reg_addr: 'our_reg_addr',
+      cgst: 'cgst_amount',
+      sgst: 'sgst_amount',
+      igst: 'igst_amount',
+      sac_code: 'sac_code',
+      series: 'series',
+      div_code: 'div_code',
+      fo_no: 'fo_no',
+      expense_acc_name: 'expense_acc_name',
+      sub_acc_name: 'sub_acc_name',
+      service_acc_name: 'service_acc_name'
+    };
+    let changed = false;
+    Object.entries(fieldMap).forEach(([recKey, arrKey]) => {
+      const val = record[recKey];
+      if (val !== undefined && val !== null && String(val).trim() !== '') {
+        if (String(base[arrKey] ?? '') !== String(val)) {
+          base[arrKey] = val;
+          changed = true;
+        }
+      }
+    });
+    if (!changed) return record._rawArray;
+    return JSON.stringify(base);
+  } catch (e) {
+    return record._rawArray;
+  }
+}
+
+// Write the corrected array JSON back to the sheet for stale records (once per session).
+let selfHealQueue = [];
+let selfHealStartTimer = null;
+let selfHealProcessTimer = null;
+
+// Deferred background repair: runs after the UI renders, one write at a time.
+function scheduleSelfHeal() {
+  if (selfHealStartTimer) return;
+  selfHealStartTimer = setTimeout(() => {
+    selfHealStartTimer = null;
+    selfHealArrays();
+  }, 1200);
+}
+
+// Build the list of records needing an array repair (only unrepaired ones).
+function selfHealArrays() {
+  const repaired = getRepairedKeys();
+  const candidates = [
+    ...state.invoices.map(inv => ({ type: 'invoice', key: inv.party_inv_no || inv.invoice_number, record: inv })),
+    ...state.purchases.map(pur => ({ type: 'purchase', key: pur.party_inv_no, record: pur }))
+  ];
+  selfHealQueue = [];
+  candidates.forEach(({ type, key, record }) => {
+    if (!key || repaired.has(`${type}:${key}`)) return;
+    const rebuilt = rebuildArrayFromRecord(record);
+    if (rebuilt && rebuilt !== record._rawArray) {
+      selfHealQueue.push({ type, key, record, rebuilt });
+    }
+  });
+  if (selfHealQueue.length === 0) return;
+  console.log(`[Repair] ${selfHealQueue.length} records queued for background array repair.`);
+  processSelfHealQueue();
+}
+
+// Rate-limited: one Google Sheets write every ~300ms to avoid flooding the server.
+function processSelfHealQueue() {
+  if (selfHealProcessTimer) return;
+  if (selfHealQueue.length === 0) {
+    selfHealProcessTimer = null;
+    return;
+  }
+  selfHealProcessTimer = setTimeout(() => {
+    selfHealProcessTimer = null;
+    const item = selfHealQueue.shift();
+    const repaired = getRepairedKeys();
+    if (!repaired.has(`${item.type}:${item.key}`)) {
+      repaired.add(`${item.type}:${item.key}`);
+      saveRepairedKeys(repaired);
+      item.record._rawArray = item.rebuilt;
+      sendSheetUpdate(item.type, item.key, { array: item.rebuilt }, null, { silent: true });
+      console.log(`[Repair] ${item.type} ${item.key}`);
+    }
+    processSelfHealQueue();
+  }, 300);
+}
+
+// Manual full repair (used by the "Repair Arrays" button).
+function repairAllArrays() {
+  try { localStorage.removeItem('db_synced_array_keys'); } catch (e) {}
+  selfHealArrays();
+  showToast('Array repair started in background...', 'warning');
 }
 
 async function syncWithAPI(interactive = true) {
@@ -1114,10 +1230,30 @@ function calculateReconciliationData() {
   });
 }
 
+function extractPdfUrl(obj) {
+  if (!obj) return '';
+  const keys = ['pdf_url', 'pdfurl', 'pdfUrl', 'PDF_URL', 'pdf url', 'PDF URL', 'url'];
+  for (const k of keys) {
+    let val = obj[k];
+    if (val && typeof val === 'string' && val.trim() !== '') {
+      let cleaned = val.trim();
+      // Extract URL from markdown format [url](url) or similar
+      const mdMatch = cleaned.match(/\[.*?\]\((.*?)\)/);
+      if (mdMatch) {
+        cleaned = mdMatch[1].trim();
+      }
+      return cleaned;
+    }
+  }
+  return '';
+}
+
 function getRecordPdfUrl(invNo) {
   if (!invNo) return '';
   const rawClean = String(invNo).trim();
   const normNo = rawClean.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+  const isValidUrl = (url) => url && (url.includes('/file/d/') || url.includes('drive.google.com') || url.startsWith('http') || url.startsWith('blob'));
 
   // 1. Search invoices by exact or sanitized invoice_number / our_bill_no
   const inv = [...state.invoices].reverse().find(i => {
@@ -1127,8 +1263,9 @@ function getRecordPdfUrl(invNo) {
            (normNo && iNo && iNo.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === normNo) ||
            (normNo && bNo && bNo.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === normNo);
   });
-  if (inv && inv.pdf_url && (inv.pdf_url.includes('/file/d/') || inv.pdf_url.startsWith('http') || inv.pdf_url.startsWith('blob'))) {
-    return inv.pdf_url;
+  if (inv) {
+    const url = extractPdfUrl(inv);
+    if (isValidUrl(url)) return url;
   }
   
   // 2. Search purchases by exact or sanitized party_inv_no / present_our_invoice
@@ -1139,11 +1276,38 @@ function getRecordPdfUrl(invNo) {
            (normNo && pNo && pNo.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === normNo) ||
            (normNo && oNo && oNo.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === normNo);
   });
-  if (pur && pur.pdf_url && (pur.pdf_url.includes('/file/d/') || pur.pdf_url.startsWith('http') || pur.pdf_url.startsWith('blob'))) {
-    return pur.pdf_url;
+  if (pur) {
+    const url = extractPdfUrl(pur);
+    if (isValidUrl(url)) return url;
   }
 
-  // 3. Search uploadedPdfs state array
+  // 3. Cross-lookup fallback: if we matched inv but it had no pdf, search if any purchase matching this inv has pdf_url
+  if (inv) {
+    const matchedPur = [...state.purchases].reverse().find(p => {
+      const pNo = String(p.party_inv_no || '').trim();
+      const oNo = String(p.present_our_invoice || '').trim();
+      return pNo === String(inv.invoice_number).trim() || oNo === String(inv.our_bill_no).trim();
+    });
+    if (matchedPur) {
+      const url = extractPdfUrl(matchedPur);
+      if (isValidUrl(url)) return url;
+    }
+  }
+
+  // 4. Cross-lookup fallback: if we matched pur but it had no pdf, search if any invoice matching this pur has pdf_url
+  if (pur) {
+    const matchedInv = [...state.invoices].reverse().find(i => {
+      const iNo = String(i.invoice_number || '').trim();
+      const bNo = String(i.our_bill_no || '').trim();
+      return iNo === String(pur.party_inv_no).trim() || bNo === String(pur.present_our_invoice).trim();
+    });
+    if (matchedInv) {
+      const url = extractPdfUrl(matchedInv);
+      if (isValidUrl(url)) return url;
+    }
+  }
+
+  // 5. Search uploadedPdfs state array
   const pdfEntry = state.uploadedPdfs.find(pdf => {
     const rId = String(pdf.recordId || '').trim();
     const title = String(pdf.title || pdf.filename || '').trim();
@@ -1166,101 +1330,209 @@ function getGoogleDriveEmbedUrl(url) {
 }
 
 function openRecordPdf(invNo) {
-  const rawUrl = getRecordPdfUrl(invNo);
+  const url = getRecordPdfUrl(invNo);
+  if (url) {
+    window.open(url, '_blank');
+  } else {
+    showToast(`No PDF drive link stored in the sheet for record: ${invNo}`, 'warning');
+  }
+}
 
-  // If a real uploaded PDF URL exists
-  if (rawUrl) {
-    let targetUrl = rawUrl;
-    if (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com')) {
-      const fileIdMatch = rawUrl.match(/\/file\/d\/([^\/]+)/i) || rawUrl.match(/[?&]id=([^&]+)/i);
-      if (fileIdMatch && fileIdMatch[1]) {
-        targetUrl = `https://drive.google.com/file/d/${fileIdMatch[1]}/view`;
+function openFloatingPdfPanel(invNo) {
+  const recordKey = String(invNo || '').trim();
+  const rawUrl = getRecordPdfUrl(recordKey);
+
+  let panel = document.getElementById('floating-pdf-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'floating-pdf-panel';
+    panel.style.cssText = 'position: fixed; top: 80px; right: 20px; width: 420px; height: 560px; z-index: 99999; background: var(--bg-darker, #16161e); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden;';
+    document.body.appendChild(panel);
+
+    const header = document.createElement('div');
+    header.id = 'floating-pdf-header';
+    panel.appendChild(header);
+
+    const body = document.createElement('div');
+    body.id = 'floating-pdf-body';
+    body.style.cssText = 'flex: 1; position: relative; overflow: auto; background: #fff;';
+    panel.appendChild(body);
+
+    // Drag logic
+    let isDragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button')) return;
+      isDragging = true;
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = rect.left; startTop = rect.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      panel.style.left = (startLeft + (e.clientX - startX)) + 'px';
+      panel.style.top = (startTop + (e.clientY - startY)) + 'px';
+      panel.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => { isDragging = false; });
+
+    // Resize handle
+    const resizeHandle = document.createElement('div');
+    resizeHandle.style.cssText = 'position: absolute; bottom: 0; right: 0; width: 20px; height: 20px; cursor: nwse-resize; z-index: 5;';
+    resizeHandle.innerHTML = '<i data-lucide="move-diagonal" style="width:14px;height:14px;color:#888;"></i>';
+    panel.appendChild(resizeHandle);
+    let isResizing = false, rStartX = 0, rStartY = 0, rStartW = 0, rStartH = 0;
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      rStartX = e.clientX; rStartY = e.clientY;
+      rStartW = panel.offsetWidth; rStartH = panel.offsetHeight;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      panel.style.width = Math.max(280, rStartW + (e.clientX - rStartX)) + 'px';
+      panel.style.height = Math.max(240, rStartH + (e.clientY - rStartY)) + 'px';
+    });
+    document.addEventListener('mouseup', () => { isResizing = false; });
+  }
+
+  // Header
+  const header = document.getElementById('floating-pdf-header');
+  header.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.12);cursor:move;">
+      <strong style="font-size:0.85rem;color:var(--text-main,#eee);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">PDF: ${escapeHtml(recordKey)}</strong>
+      <div style="display:flex;gap:6px;cursor:default;">
+        <button id="floating-pdf-open-tab" class="btn btn-secondary btn-xs" title="Open in new tab"><i data-lucide="external-link" style="width:12px;height:12px;"></i></button>
+        <button id="floating-pdf-unlink" class="btn btn-danger btn-xs" title="Unlink PDF"><i data-lucide="trash-2" style="width:12px;height:12px;"></i></button>
+        <button id="floating-pdf-close" class="btn btn-secondary btn-xs" title="Close"><i data-lucide="x" style="width:12px;height:12px;"></i></button>
+      </div>
+    </div>
+  `;
+
+  const body = document.getElementById('floating-pdf-body');
+  const openTabBtn = document.getElementById('floating-pdf-open-tab');
+  const unlinkBtn = document.getElementById('floating-pdf-unlink');
+  const closeBtn = document.getElementById('floating-pdf-close');
+
+  closeBtn.addEventListener('click', () => { panel.style.display = 'none'; });
+  openTabBtn.addEventListener('click', () => {
+    if (rawUrl) window.open(rawUrl, '_blank');
+  });
+  unlinkBtn.addEventListener('click', () => {
+    if (confirm(`Unlink PDF for ${recordKey}? (Does not delete from Google Drive)`)) {
+      state.invoices = state.invoices.map(inv => {
+        if (String(inv.invoice_number).trim() === recordKey) inv.pdf_url = '';
+        return inv;
+      });
+      state.purchases = state.purchases.map(pur => {
+        if (String(pur.party_inv_no).trim() === recordKey) pur.pdf_url = '';
+        return pur;
+      });
+      saveToLocalStorage();
+      renderAllViews();
+      showToast("PDF unlinked from record.", "success");
+      openFloatingPdfPanel(recordKey);
+    }
+  });
+
+  // Render PDF or upload dropzone
+  if (rawUrl && (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com') || rawUrl.startsWith('http') || rawUrl.startsWith('blob'))) {
+    const embedUrl = getGoogleDriveEmbedUrl(rawUrl);
+    body.innerHTML = `<iframe src="${escapeHtml(embedUrl)}" style="width:100%;height:100%;border:none;display:block;"></iframe>`;
+  } else {
+    body.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:#555;">
+        <i data-lucide="upload-cloud" style="width:48px;height:48px;color:#8b5cf6;margin-bottom:12px;"></i>
+        <h3 style="color:#222;font-size:1rem;margin-bottom:6px;font-weight:700;">No PDF for ${escapeHtml(recordKey)}</h3>
+        <p style="font-size:0.8rem;margin-bottom:16px;">Upload the original PDF to view it here.</p>
+        <input type="file" id="floating-pdf-input" accept="application/pdf" style="display:none;">
+        <button class="btn btn-primary btn-sm" id="floating-pdf-select-btn" style="background:#8b5cf6;color:#fff;border:none;padding:6px 14px;border-radius:8px;font-size:0.85rem;cursor:pointer;"><i data-lucide="file-up" style="width:14px;height:14px;vertical-align:middle;"></i> Select PDF</button>
+      </div>
+    `;
+    document.getElementById('floating-pdf-select-btn').addEventListener('click', () => {
+      document.getElementById('floating-pdf-input').click();
+    });
+    document.getElementById('floating-pdf-input').addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        uploadPdfForRecord(e.target.files[0], recordKey, () => {
+          openFloatingPdfPanel(recordKey);
+        });
       }
-    }
-    
-    // Check if browser allows opening popup tab, otherwise load in iframe
-    const popup = window.open(targetUrl, '_blank');
-    if (popup) {
-      popup.focus();
-      showToast(`Opening uploaded PDF for ${invNo}...`, 'info');
-      return;
-    }
+    });
   }
 
-  // If no PDF file uploaded yet, open the modal viewer with instant upload dropzone
-  const modal = document.getElementById('pdf-viewer-modal');
-  const body = document.getElementById('pdf-viewer-body');
-  const title = document.getElementById('pdf-viewer-title');
-  const externalBtn = document.getElementById('pdf-viewer-external-btn');
+  panel.style.display = 'flex';
+  if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+}
 
-  if (title) title.textContent = `Upload PDF: ${invNo || 'Document'}`;
-  if (externalBtn) externalBtn.style.display = 'none';
+function closeFloatingPdfPanel() {
+  const panel = document.getElementById('floating-pdf-panel');
+  if (panel) panel.style.display = 'none';
+}
 
-  if (modal && body) {
-    if (rawUrl && !rawUrl.includes('drive.google.com')) {
-      body.innerHTML = `<iframe id="pdf-viewer-iframe" src="${rawUrl}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>`;
-    } else {
-      body.innerHTML = `
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 40px; text-align: center; color: var(--text-muted);">
-          <i data-lucide="upload-cloud" style="width: 56px; height: 56px; color: var(--accent-purple); margin-bottom: 16px;"></i>
-          <h3 style="color: var(--text-main); font-size: 1.2rem; margin-bottom: 8px; font-weight: 700;">No PDF File Uploaded for Invoice ${escapeHtml(invNo || '')}</h3>
-          <p style="font-size: 0.9rem; max-width: 450px; margin-bottom: 24px; line-height: 1.5; color: var(--text-muted);">
-            Please upload your original PDF document for this bill to view it here.
-          </p>
-
-          <input type="file" id="modal-quick-pdf-input" accept="application/pdf" style="display: none;">
-          <div style="display: flex; gap: 12px; align-items: center;">
-            <button class="btn btn-primary btn-lg" onclick="document.getElementById('modal-quick-pdf-input').click();">
-              <i data-lucide="file-up"></i> Select & Upload PDF File
-            </button>
-            <button class="btn btn-secondary" onclick="document.getElementById('pdf-viewer-modal').classList.remove('active'); window.openDetailedRecordModal('${escapeHtml(invNo)}');">
-              <i data-lucide="edit-3"></i> View Record Audit
-            </button>
-          </div>
-        </div>
-      `;
-      if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
-
-      // Quick Upload Event Handler inside Modal
-      setTimeout(() => {
-        const fileInput = document.getElementById('modal-quick-pdf-input');
-        if (fileInput) {
-          fileInput.addEventListener('change', () => {
-            if (fileInput.files.length > 0) {
-              const file = fileInput.files[0];
-              const localUrl = URL.createObjectURL(file);
-              
-              // Store PDF URL locally for this invoice
-              state.invoices = state.invoices.map(inv => {
-                if (String(inv.invoice_number).trim() === String(invNo).trim()) inv.pdf_url = localUrl;
-                return inv;
-              });
-              state.purchases = state.purchases.map(pur => {
-                if (String(pur.party_inv_no).trim() === String(invNo).trim()) pur.pdf_url = localUrl;
-                return pur;
-              });
-
-              state.uploadedPdfs.unshift({
-                id: `uploaded-${Date.now()}`,
-                title: file.name,
-                url: localUrl,
-                recordId: invNo,
-                filename: file.name,
-                uploadedAt: new Date().toISOString()
-              });
-
-              saveToLocalStorage();
-              showToast(`PDF ${file.name} uploaded for ${invNo}!`, 'success');
-              
-              // Render real uploaded PDF file in iframe immediately
-              body.innerHTML = `<iframe id="pdf-viewer-iframe" src="${localUrl}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>`;
-            }
-          });
-        }
-      }, 100);
-    }
-    modal.classList.add('active');
+function uploadPdfForRecord(file, invoiceNumber, onDone) {
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    showToast('Only PDF files are accepted.', 'error');
+    return;
   }
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('File exceeds 10MB limit.', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('invoiceNumber', invoiceNumber);
+  formData.append('billType', 'interlock');
+
+  const xhr = new XMLHttpRequest();
+  xhr.addEventListener('load', () => {
+    try {
+      const data = JSON.parse(xhr.responseText);
+      if (data.success) {
+        showToast(`${file.name} uploaded to Google Drive!`, 'success');
+        const url = data.fileUrl || '';
+        const uploadedEntry = {
+          id: `floating-upload-${Date.now()}`,
+          title: file.name,
+          url: url,
+          source: 'Floating PDF Panel',
+          recordId: invoiceNumber,
+          filename: file.name,
+          uploadedAt: new Date().toISOString()
+        };
+        state.uploadedPdfs = [uploadedEntry, ...state.uploadedPdfs.filter(item => !(item.url === url && item.title === file.name))];
+        state.invoices = state.invoices.map(inv => {
+          if (String(inv.invoice_number).trim() === String(invoiceNumber).trim()) inv.pdf_url = url;
+          return inv;
+        });
+        state.purchases = state.purchases.map(pur => {
+          if (String(pur.party_inv_no).trim() === String(invoiceNumber).trim()) pur.pdf_url = url;
+          return pur;
+        });
+        mergeUploadedPdfsFromRecords();
+        saveToLocalStorage();
+
+        // Persist the Drive link to the sheet for all users
+        const matchedInv = [...state.invoices].reverse().find(i => String(i.invoice_number).trim() === String(invoiceNumber).trim());
+        const matchedPur = [...state.purchases].reverse().find(p => String(p.party_inv_no).trim() === String(invoiceNumber).trim());
+        if (matchedInv) sendSheetUpdate('invoice', matchedInv.invoice_number, { pdf_url: url }, matchedInv);
+        if (matchedPur) sendSheetUpdate('purchase', matchedPur.party_inv_no, { pdf_url: url }, matchedPur);
+
+        renderAllViews();
+        if (onDone) onDone();
+      } else {
+        showToast(`Upload failed: ${data.error || 'Unknown error'}`, 'error');
+      }
+    } catch {
+      showToast(`Upload failed: ${xhr.responseText}`, 'error');
+    }
+  });
+  xhr.addEventListener('error', () => {
+    showToast('Upload failed — cannot reach server.', 'error');
+  });
+  xhr.open('POST', `${SERVER_BASE_URL}/upload`);
+  xhr.send(formData);
 }
 
 // Expose globally on window for inline onclick handlers
@@ -1726,11 +1998,31 @@ function makeCellEditable(cell) {
         fieldName === 'freight' ? 'bill_freight_val' :
         fieldName;
 
+      // Rebuild the sheet's array JSON: update this line item + the array-level field
+      let rebuiltArray = null;
+      if (invRecord && invRecord._rawArray) {
+        try {
+          const arrObj = JSON.parse(invRecord._rawArray);
+          if (Array.isArray(arrObj.line_items) && arrObj.line_items[lineIndex]) {
+            arrObj.line_items[lineIndex][fieldName] = newVal;
+          }
+          const fieldToArray = { 'lr_no': 'cn_lr_no', 'date': 'lr_date', 'truck_no': 'lorry_vehicle_no', 'freight': 'bill_freight_val' };
+          if (fieldToArray[fieldName]) arrObj[fieldToArray[fieldName]] = newVal;
+          rebuiltArray = JSON.stringify(arrObj);
+          invRecord._rawArray = rebuiltArray;
+        } catch (e) {
+          console.warn('Could not rebuild array on line-item edit:', e);
+        }
+      }
+
+      const updates = { [mappedKey]: newVal };
+      if (rebuiltArray) updates.array = rebuiltArray;
+
       const payload = {
         sheetName: 'Invoice_Items',
         searchColumn: searchCol,
         searchValue: searchVal,
-        updates: { [mappedKey]: newVal }
+        updates: updates
       };
 
       fetch(`${SERVER_BASE_URL}/api/update-record`, {
@@ -1758,6 +2050,18 @@ function makeCellEditable(cell) {
         });
         showToast("Spreadsheet updated directly!", "success");
       });
+
+      // Keep the array JSON consistent across ALL rows that share the same party_inv_no
+      const invNo = invRecord.invoice_number || invRecord.party_inv_no;
+      if (invNo && rebuiltArray) {
+        const matchingRows = state.invoices.filter(i => String(i.invoice_number || i.party_inv_no) === String(invNo));
+        matchingRows.forEach(row => {
+          const rowKey = row.our_bill_no || row.party_inv_no || row.invoice_number;
+          if (!rowKey) return;
+          row._rawArray = rebuiltArray;
+          sendSheetUpdate('invoice', rowKey, { array: rebuiltArray }, row, { silent: true });
+        });
+      }
     } else {
       const partyInvNo = (recordType === 'invoice' ? record.invoice_number : record.party_inv_no) || '';
       sendSheetUpdate(recordType, (fieldName === 'invoice_number' || fieldName === 'party_inv_no') ? oldVal : partyInvNo, {
@@ -1886,6 +2190,12 @@ function openDetailedRecordModal(target) {
 
   // Switch back to split-view tab on opening
   document.querySelector('[data-detail-tab="split-view"]').click();
+
+  // Refresh the floating PDF panel to the selected record if it is open
+  const floatingPanel = document.getElementById('floating-pdf-panel');
+  if (floatingPanel && floatingPanel.style.display !== 'none') {
+    openFloatingPdfPanel(invoiceNumber);
+  }
 }
 
 function buildERPRowsView(invoice, purchase) {
@@ -2420,7 +2730,11 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
   if (pdfSection && pdfContainer) {
     if (invoice && invoice.pdf_url) {
       pdfSection.style.display = 'block';
+      const embedUrl = getGoogleDriveEmbedUrl(invoice.pdf_url);
       pdfContainer.innerHTML = `
+        <div style="border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); margin-bottom: 10px; height: 320px;">
+          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>
+        </div>
         <div class="pdf-attachment-card">
           <div class="pdf-attachment-info">
             <i data-lucide="file-text" style="color: var(--accent-red); width: 24px; height: 24px;"></i>
@@ -2678,7 +2992,11 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
   if (purchasePdfSection && purchasePdfContainer) {
     if (purchase && purchase.pdf_url) {
       purchasePdfSection.style.display = 'block';
+      const embedUrl = getGoogleDriveEmbedUrl(purchase.pdf_url);
       purchasePdfContainer.innerHTML = `
+        <div style="border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); margin-bottom: 10px; height: 320px;">
+          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>
+        </div>
         <div class="pdf-attachment-card">
           <div class="pdf-attachment-info">
             <i data-lucide="file-text" style="color: var(--accent-red); width: 24px; height: 24px;"></i>
@@ -2846,10 +3164,10 @@ function saveDetailFormOverrides() {
 
       // Trigger writebacks to Google Sheets database
       if (invoiceArray.length > 0) {
-        sendSheetUpdate('invoice', invNumber, invoiceArray[0], invoiceArray[0]);
+        sendSheetUpdate('invoice', invNumber, invoiceArray[0], invoiceArray[0], { includeLineItems: true });
       }
       if (purchaseArray.length > 0) {
-        sendSheetUpdate('purchase', invNumber, purchaseArray[0], purchaseArray[0]);
+        sendSheetUpdate('purchase', invNumber, purchaseArray[0], purchaseArray[0], { includeLineItems: true });
       }
 
       showToast("Raw JSON override applied successfully!", "success");
@@ -3029,7 +3347,7 @@ function saveDetailFormOverrides() {
       total_invoice_value: parseFloat(getFormVal('invoice-details-edit-form', 'inv_total_invoice_value') || 0),
       RCM: parseFloat(getFormVal('invoice-details-edit-form', 'inv_RCM') || 0)
     };
-    sendSheetUpdate('invoice', invNumber, invoiceFields, invoice);
+    sendSheetUpdate('invoice', invNumber, invoiceFields, invoice, { includeLineItems: true });
     logAuditEntry('Modal Form Save', 'invoice', overrideInvNo, 'Updated invoice details from modal edit form', 'SUCCESS');
   }
 
@@ -3057,7 +3375,7 @@ function saveDetailFormOverrides() {
       tax_critaria: getFormVal('purchase-details-edit-form', 'pur_tax_critaria'),
       tax_critaria_name: getFormVal('purchase-details-edit-form', 'pur_tax_critaria_name')
     };
-    sendSheetUpdate('purchase', invNumber, purchaseFields, purchase);
+    sendSheetUpdate('purchase', invNumber, purchaseFields, purchase, { includeLineItems: true });
     logAuditEntry('Modal Form Save', 'purchase', overridePurNo, 'Updated purchase details from modal edit form', 'SUCCESS');
   }
 
@@ -3069,7 +3387,7 @@ function saveDetailFormOverrides() {
   renderAllViews();
 }
 
-async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
+async function sendSheetUpdate(type, partyInvNo, fields, record = null, options = {}) {
   if (!partyInvNo) return;
   
   const mappedUpdates = {};
@@ -3080,17 +3398,48 @@ async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
       if (key === 'ai_summary') mappedKey = 'AI SUMMRY';
     } else if (type === 'invoice') {
       if (key === 'invoice_number') mappedKey = 'party_inv_no';
+      if (key === 'invoice_date') mappedKey = 'party_inv_date';
     }
     mappedUpdates[mappedKey] = val;
   });
+
+
 
   // Use our_bill_no as search for invoice if available
   const searchCol = (type === 'invoice' && record && record.our_bill_no) ? 'our_bill_no' : 'party_inv_no';
   const searchVal = (type === 'invoice' && record && record.our_bill_no) ? record.our_bill_no : partyInvNo;
 
-  // Include line_items in updates if record has them
-  if (record && record.line_items && Array.isArray(record.line_items)) {
+  // Include line_items ONLY when explicitly requested (full-record saves).
+  // Single-field updates must never overwrite line_items in the sheet.
+  if (options.includeLineItems && record && record.line_items && Array.isArray(record.line_items)) {
     mappedUpdates.line_items = record.line_items;
+  }
+
+  // Keep the sheet's array JSON in sync: merge the edited fields into it.
+  // (Skip when the caller already provided an explicit array payload.)
+  if (record && record._rawArray && !('array' in fields)) {
+    try {
+      const arrObj = JSON.parse(record._rawArray);
+      const arrayKeyMap = {
+        cgst: 'cgst_amount',
+        sgst: 'sgst_amount',
+        igst: 'igst_amount',
+        'AI SUMMRY': 'ai_summary',
+        total_st_charges: 'st_charges',
+        party_inv_no: 'invoice_number',
+        party_inv_date: 'invoice_date'
+      };
+      Object.entries(mappedUpdates).forEach(([k, v]) => {
+        if (k === 'line_items') return;
+        arrObj[arrayKeyMap[k] || k] = v;
+      });
+      if (options.includeLineItems && record.line_items && Array.isArray(record.line_items)) {
+        arrObj.line_items = record.line_items;
+      }
+      mappedUpdates.array = JSON.stringify(arrObj);
+    } catch (e) {
+      console.warn('Could not rebuild array JSON for sheet update:', e);
+    }
   }
 
   const payload = {
@@ -3110,7 +3459,7 @@ async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
     });
     const result = await res.json();
     if (result.success || result.status === 'success') {
-      showToast("Spreadsheet updated successfully!", "success");
+      if (!options.silent) showToast("Spreadsheet updated successfully!", "success");
     } else {
       throw new Error(result.message || 'unknown response');
     }
@@ -3124,10 +3473,10 @@ async function sendSheetUpdate(type, partyInvNo, fields, record = null) {
         headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(payload)
       });
-      showToast("Spreadsheet updated directly!", "success");
+      if (!options.silent) showToast("Spreadsheet updated directly!", "success");
     } catch (directError) {
       console.error("Direct update fallback failed:", directError);
-      showToast("Could not sync edit to Google Sheets.", "warning");
+      if (!options.silent) showToast("Could not sync edit to Google Sheets.", "warning");
     }
   }
 }
@@ -3744,6 +4093,16 @@ function initSearchAndFilters() {
       syncWithAPI(true);
     }
   });
+
+  // Repair Arrays button: rebuild + write back the sheet's array JSON for all records
+  const repairBtn = document.getElementById('repair-arrays-btn');
+  if (repairBtn) {
+    repairBtn.addEventListener('click', () => {
+      if (confirm("Rebuild the array JSON for ALL records and write them back to the sheet (rate-limited background task)? This may take a while for large datasets.")) {
+        repairAllArrays();
+      }
+    });
+  }
   
   // Populate filter selectors options once data loaded
   populateSelectorsOptions();
