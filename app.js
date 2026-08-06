@@ -28,6 +28,7 @@ function saveRepairedKeys(set) {
 }
 
 const SERVER_BASE_URL = import.meta.env.VITE_SERVER_BASE_URL || `http://${window.location.hostname}:4000`;
+console.log('SERVER_BASE_URL:', SERVER_BASE_URL);
 
 // Authentication Constants (Static Credentials)
 const STATIC_USER_ID = "admin";
@@ -167,6 +168,7 @@ function initApp() {
   initAddRecordActions();
   initDetailModalTabs();
   initAuthActions();
+  initExportAndSelection();
 
   // Check auth
   const isAuthed = checkAuth();
@@ -197,7 +199,7 @@ function initApp() {
 }
 
 // Fetch fresh data from server, update local cache, then re-render UI
-async function fetchAndRefresh() {
+async function fetchAndRefresh(forceRefresh = false) {
   const statusIndicator = document.querySelector('.status-indicator');
   const syncTimeLabel = document.getElementById('last-sync-time');
 
@@ -208,7 +210,7 @@ async function fetchAndRefresh() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-    const response = await fetch(`${SERVER_BASE_URL}/api/data?_=${Date.now()}`, { signal: controller.signal });
+    const response = await fetch(`${SERVER_BASE_URL}/api/data?_=${Date.now()}${forceRefresh ? '&refresh=true' : ''}`, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (!response.ok) throw new Error(`Server returned ${response.status}`);
@@ -410,6 +412,16 @@ function mergeUploadedPdfsFromRecords() {
 
   state.invoices.forEach(inv => {
     if (!inv?.pdf_url) return;
+    
+    // Cross-lookup upload_date from matching purchase
+    let uploadDate = inv.upload_date || '';
+    if (!uploadDate) {
+      const match = state.purchases.find(p => String(p.party_inv_no).trim().toLowerCase() === String(inv.invoice_number).trim().toLowerCase());
+      if (match && match.upload_date) {
+        uploadDate = match.upload_date;
+      }
+    }
+
     derivedEntries.push({
       id: `inv-pdf-${inv.invoice_number || Date.now()}`,
       title: inv.invoice_number || 'Invoice PDF',
@@ -417,7 +429,8 @@ function mergeUploadedPdfsFromRecords() {
       source: 'Invoice',
       recordId: inv.invoice_number || '',
       filename: `${inv.invoice_number || 'invoice'}.pdf`,
-      uploadedAt: inv.uploadedAt || new Date().toISOString()
+      uploadedAt: inv.uploadedAt || new Date().toISOString(),
+      upload_date: uploadDate
     });
   });
 
@@ -430,7 +443,8 @@ function mergeUploadedPdfsFromRecords() {
       source: 'Purchase',
       recordId: pur.party_inv_no || '',
       filename: `${pur.party_inv_no || 'purchase'}.pdf`,
-      uploadedAt: pur.uploadedAt || new Date().toISOString()
+      uploadedAt: pur.uploadedAt || new Date().toISOString(),
+      upload_date: pur.upload_date || ''
     });
   });
 
@@ -449,7 +463,8 @@ function mergeUploadedPdfsFromRecords() {
       source: item.source || 'Upload',
       recordId: item.recordId || '',
       filename: item.filename || item.title || 'uploaded.pdf',
-      uploadedAt: item.uploadedAt || new Date().toISOString()
+      uploadedAt: item.uploadedAt || new Date().toISOString(),
+      upload_date: item.upload_date || ''
     });
   });
 
@@ -576,7 +591,7 @@ function processRawData(data) {
     }
 
     return {
-      id: `inv-${(invoiceNumber || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}`,
+      id: `inv-${(invoiceNumber || idx).toString().replace(/[^a-zA-Z0-9]/g, '_')}-${idx}`,
       _rawArray: inv.array || '',
       invoice_number: invoiceNumber,
       invoice_date: invoiceDate,
@@ -628,7 +643,8 @@ function processRawData(data) {
       deparment: inv.deparment || inv.department || '',
       deperment_code: inv.deperment_code || inv.department_code || '',
       validated: String(inv.validated || parsedArray.validated || '').toLowerCase() === 'true',
-      validation_timestamp: inv.validation_timestamp || parsedArray.validation_timestamp || ''
+      validation_timestamp: inv.validation_timestamp || parsedArray.validation_timestamp || '',
+      upload_date: inv.upload_date || parsedArray.upload_date || ''
     };
   });
 
@@ -747,7 +763,8 @@ function processRawData(data) {
       deparment: pur.deparment || pur.department || '',
       deperment_code: pur.deperment_code || pur.department_code || '',
       validated: String(pur.validated || parsedArray.validated || '').toLowerCase() === 'true',
-      validation_timestamp: pur.validation_timestamp || parsedArray.validation_timestamp || ''
+      validation_timestamp: pur.validation_timestamp || parsedArray.validation_timestamp || '',
+      upload_date: pur.upload_date || parsedArray.upload_date || ''
     };
   });
 
@@ -886,7 +903,7 @@ function repairAllArrays() {
 
 async function syncWithAPI(interactive = true) {
   if (interactive) showToast('Fetching data from server...', 'warning');
-  await fetchAndRefresh();
+  await fetchAndRefresh(interactive);
   if (interactive) showToast('Data synchronized successfully!', 'success');
 }
 
@@ -903,6 +920,45 @@ function renderAllViews() {
   renderAuditLogsView();
 }
 
+function formatToDDMMYYYY(dateStr) {
+  if (!dateStr) return '';
+  const str = String(dateStr).trim();
+  if (str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') return '';
+  
+  const matchYYYYMMDD = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (matchYYYYMMDD) {
+    return `${matchYYYYMMDD[3]}-${matchYYYYMMDD[2]}-${matchYYYYMMDD[1]}`;
+  }
+  const matchYMD = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (matchYMD) {
+    return `${matchYMD[3]}-${matchYMD[2]}-${matchYMD[1]}`;
+  }
+  const matchDMY = str.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (matchDMY) {
+    return str;
+  }
+  const matchDMYSlashes = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (matchDMYSlashes) {
+    return `${matchDMYSlashes[1]}-${matchDMYSlashes[2]}-${matchDMYSlashes[3]}`;
+  }
+  const matchYMDSlashes = str.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (matchYMDSlashes) {
+    return `${matchYMDSlashes[3]}-${matchYMDSlashes[2]}-${matchYMDSlashes[1]}`;
+  }
+
+  try {
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}-${mm}-${yyyy}`;
+    }
+  } catch (e) {}
+  
+  return str;
+}
+
 function renderUploadCenter() {
   const listEl = document.getElementById('uploaded-pdfs-list');
   const previewEl = document.getElementById('uploaded-pdf-preview');
@@ -917,25 +973,100 @@ function renderUploadCenter() {
     return;
   }
 
-  listEl.innerHTML = '';
+  // Group PDFs by upload date
+  const groups = {};
   pdfs.forEach(pdf => {
-    const uploadTime = new Date(pdf.uploadedAt || pdf.timestamp || Date.now()).getTime();
-    const daysElapsed = Math.floor((Date.now() - uploadTime) / (1000 * 60 * 60 * 24));
-    const daysRemaining = Math.max(0, 10 - daysElapsed);
+    const rawDate = pdf.upload_date || '';
+    const dateKey = rawDate ? formatToDDMMYYYY(rawDate) : 'No Upload Date';
+    if (!groups[dateKey]) {
+      groups[dateKey] = [];
+    }
+    groups[dateKey].push(pdf);
+  });
 
-    const card = document.createElement('div');
-    card.className = 'uploaded-pdf-card';
-    card.innerHTML = `
-      <div class="uploaded-pdf-meta">
-        <div class="uploaded-pdf-title">${escapeHtml(pdf.title || pdf.filename || 'Uploaded PDF')}</div>
-        <div class="uploaded-pdf-subtext">${escapeHtml(pdf.source || 'Attachment')} • ${escapeHtml(pdf.recordId || 'General')} • <span class="badge badge-purple" style="font-size: 0.675rem; padding: 2px 6px;">Expires in ${daysRemaining} day(s)</span></div>
-      </div>
-      <div class="uploaded-pdf-actions">
-        <button class="btn btn-secondary btn-xs" data-action="preview" data-url="${escapeHtml(pdf.url)}" data-title="${escapeHtml(pdf.title || pdf.filename || 'Uploaded PDF')}">Preview</button>
-        <a class="btn btn-primary btn-xs" href="${escapeHtml(pdf.url)}" target="_blank" rel="noopener noreferrer">Open</a>
-      </div>
-    `;
-    listEl.appendChild(card);
+  // Sort groups: most recent dates first, 'No Upload Date' at the bottom
+  const sortedDates = Object.keys(groups).sort((a, b) => {
+    if (a === 'No Upload Date') return 1;
+    if (b === 'No Upload Date') return -1;
+    
+    // Parse DD-MM-YYYY to timestamp for sorting comparison
+    const getTimestamp = (dStr) => {
+      const parts = dStr.split('-');
+      if (parts.length === 3) {
+        return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).getTime();
+      }
+      return 0;
+    };
+    return getTimestamp(b) - getTimestamp(a);
+  });
+
+  listEl.innerHTML = '';
+
+  sortedDates.forEach(dateKey => {
+    const groupPdfs = groups[dateKey];
+    const groupClass = 'pdf-group-' + dateKey.replace(/[^a-zA-Z0-9]/g, '_');
+    
+    // Create Date Separation Header
+    const headerEl = document.createElement('div');
+    headerEl.className = 'pdf-date-group-header';
+    headerEl.setAttribute('data-target-group', groupClass);
+    headerEl.style.cursor = 'pointer';
+    
+    if (dateKey === 'No Upload Date') {
+      headerEl.style = "margin-top: 16px; margin-bottom: 8px; padding: 6px 12px; background: rgba(255, 255, 255, 0.05); border-left: 3px solid var(--text-muted); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 0.8rem; color: var(--text-muted); cursor: pointer;";
+      headerEl.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle;"></i></span>
+          <span><i data-lucide="help-circle" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 6px;"></i> Others (No Upload Date)</span>
+        </div>
+        <span class="badge badge-secondary" style="font-size: 0.65rem; padding: 2px 6px; background-color: var(--border-color); color: var(--text-muted);">${groupPdfs.length} file(s)</span>
+      `;
+    } else {
+      headerEl.style = "margin-top: 16px; margin-bottom: 8px; padding: 6px 12px; background: rgba(162, 95, 255, 0.1); border-left: 3px solid var(--accent-purple); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 0.8rem; color: var(--text-main); cursor: pointer;";
+      headerEl.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle; color: var(--accent-purple);"></i></span>
+          <span><i data-lucide="calendar" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 6px; color: var(--accent-purple);"></i> ${dateKey}</span>
+        </div>
+        <span class="badge badge-purple" style="font-size: 0.65rem; padding: 2px 6px;">${groupPdfs.length} file(s)</span>
+      `;
+    }
+    
+    headerEl.addEventListener('click', () => {
+      const target = headerEl.getAttribute('data-target-group');
+      const isCollapsed = headerEl.classList.toggle('collapsed');
+      const icon = headerEl.querySelector('.collapse-indicator');
+      if (icon) {
+        icon.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+      }
+      document.querySelectorAll('.' + target).forEach(card => {
+        card.style.display = isCollapsed ? 'none' : 'flex';
+      });
+    });
+    
+    listEl.appendChild(headerEl);
+
+    // Create cards for each PDF in the group
+    groupPdfs.forEach(pdf => {
+      const uploadTime = new Date(pdf.uploadedAt || pdf.timestamp || Date.now()).getTime();
+      const daysElapsed = Math.floor((Date.now() - uploadTime) / (1000 * 60 * 60 * 24));
+      const daysRemaining = Math.max(0, 10 - daysElapsed);
+
+      const card = document.createElement('div');
+      card.className = 'uploaded-pdf-card ' + groupClass;
+      card.style = "margin-bottom: 8px;";
+      card.innerHTML = `
+        <div class="uploaded-pdf-meta">
+          <div class="uploaded-pdf-title" style="font-weight: 600;">${escapeHtml(pdf.title || pdf.filename || 'Uploaded PDF')}</div>
+          <div class="uploaded-pdf-subtext">${escapeHtml(pdf.source || 'Attachment')} • ${escapeHtml(pdf.recordId || 'General')} • <span class="badge badge-purple" style="font-size: 0.675rem; padding: 2px 6px;">Expires in ${daysRemaining} day(s)</span></div>
+        </div>
+        <div class="uploaded-pdf-actions">
+          <button class="btn btn-secondary btn-xs" data-action="preview" data-url="${escapeHtml(pdf.url)}" data-title="${escapeHtml(pdf.title || pdf.filename || 'Uploaded PDF')}">Preview</button>
+          <a class="btn btn-primary btn-xs" href="${escapeHtml(pdf.url)}" target="_blank" rel="noopener noreferrer">Open</a>
+        </div>
+      `;
+      listEl.appendChild(card);
+    });
   });
 
   listEl.querySelectorAll('[data-action="preview"]').forEach(button => {
@@ -944,8 +1075,21 @@ function renderUploadCenter() {
     });
   });
 
+  // Re-run Lucide icons inside listEl to display calendar/help-circle icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons({
+      attrs: {
+        class: 'lucide'
+      },
+      nameAttr: 'data-lucide'
+    });
+  }
+
+  // Auto preview first PDF
   const firstPdf = pdfs[0];
-  renderPdfPreview(firstPdf.url, firstPdf.title || firstPdf.filename || 'Uploaded PDF');
+  if (firstPdf) {
+    renderPdfPreview(firstPdf.url, firstPdf.title || firstPdf.filename || 'Uploaded PDF');
+  }
 }
 
 function getEmbeddableDriveUrl(url) {
@@ -978,7 +1122,7 @@ function renderPdfPreview(url, title) {
       </div>
       <a class="btn btn-secondary btn-xs" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open Full PDF</a>
     </div>
-    <iframe class="uploaded-pdf-iframe" src="${escapeHtml(embedUrl)}" title="${escapeHtml(title || 'PDF Preview')}"></iframe>
+    <iframe class="uploaded-pdf-iframe" src="${escapeHtml(embedUrl)}" title="${escapeHtml(title || 'PDF Preview')}" allow="unload"></iframe>
   `;
 }
 
@@ -1438,7 +1582,7 @@ function openFloatingPdfPanel(invNo) {
   // Render PDF or upload dropzone
   if (rawUrl && (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com') || rawUrl.startsWith('http') || rawUrl.startsWith('blob'))) {
     const embedUrl = getGoogleDriveEmbedUrl(rawUrl);
-    body.innerHTML = `<iframe src="${escapeHtml(embedUrl)}" style="width:100%;height:100%;border:none;display:block;"></iframe>`;
+    body.innerHTML = `<iframe src="${escapeHtml(embedUrl)}" style="width:100%;height:100%;border:none;display:block;" allow="unload"></iframe>`;
   } else {
     body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:#555;">
@@ -1513,11 +1657,19 @@ function uploadPdfForRecord(file, invoiceNumber, onDone) {
         mergeUploadedPdfsFromRecords();
         saveToLocalStorage();
 
-        // Persist the Drive link to the sheet for all users
+        // Persist the Drive link and upload date to the sheet for all users
+        const todayYYYYMMDD = (() => {
+          const d = new Date();
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}${mm}${dd}`;
+        })();
+
         const matchedInv = [...state.invoices].reverse().find(i => String(i.invoice_number).trim() === String(invoiceNumber).trim());
         const matchedPur = [...state.purchases].reverse().find(p => String(p.party_inv_no).trim() === String(invoiceNumber).trim());
-        if (matchedInv) sendSheetUpdate('invoice', matchedInv.invoice_number, { pdf_url: url }, matchedInv);
-        if (matchedPur) sendSheetUpdate('purchase', matchedPur.party_inv_no, { pdf_url: url }, matchedPur);
+        if (matchedInv) sendSheetUpdate('invoice', matchedInv.invoice_number, { pdf_url: url, upload_date: todayYYYYMMDD }, matchedInv);
+        if (matchedPur) sendSheetUpdate('purchase', matchedPur.party_inv_no, { pdf_url: url, upload_date: todayYYYYMMDD }, matchedPur);
 
         renderAllViews();
         if (onDone) onDone();
@@ -1538,7 +1690,442 @@ function uploadPdfForRecord(file, invoiceNumber, onDone) {
 // Expose globally on window for inline onclick handlers
 window.openRecordPdf = openRecordPdf;
 
+// Generate Merged ERP Booking + Tagging Rows side-by-side
+function generateMergedERPRows(invoiceNumber) {
+  const invoiceNumberStr = String(invoiceNumber || '').trim();
+  const inv = [...state.invoices].reverse().find(i => String(i.invoice_number) === invoiceNumberStr) || null;
+  const pur = [...state.purchases].reverse().find(p => String(p.party_inv_no) === invoiceNumberStr) || null;
+
+  if (!inv && !pur) return [];
+
+  // Resolve ourInvoiceNo
+  const ourInvoiceNo = (() => {
+    if (inv && inv.our_bill_no && String(inv.our_bill_no).trim() !== '') {
+      return String(inv.our_bill_no).trim();
+    }
+    if (pur && pur.our_bill_no && String(pur.our_bill_no).trim() !== '') {
+      return String(pur.our_bill_no).trim();
+    }
+    const aiSummaryText = (pur && pur.ai_summary) || (inv && inv.ai_summary) || '';
+    if (aiSummaryText) {
+      const match = aiSummaryText.match(/([A-Z0-9a-z-]+)\s+Validated/);
+      if (match) return match[1];
+      const matchLP = aiSummaryText.match(/(LP[A-Za-z0-9-]+)/);
+      if (matchLP) return matchLP[1];
+    }
+    return '-';
+  })();
+
+  // Aggregate line items
+  let lineItems = [];
+  const groupRecords = inv ? [inv] : (pur ? [pur] : []);
+  groupRecords.forEach(r => {
+    if (r.line_items && r.line_items.length > 0) {
+      const itemsWithInvoiceNumber = r.line_items.map(item => ({
+        ...item,
+        our_invoice_number: item.our_invoice_number || r.invoice_number || r.party_inv_no || r.our_bill_no || ''
+      }));
+      lineItems = [...lineItems, ...itemsWithInvoiceNumber];
+    } else {
+      lineItems.push({
+        date: r.lr_date || r.invoice_date || r.party_inv_date,
+        our_invoice_number: r.invoice_number || r.party_inv_no || r.our_bill_no || '',
+        truck_no: r.lorry_vehicle_no,
+        fo_no: r.fo_no,
+        description: r.item_name || r.description,
+        lr_no: r.cn_lr_no,
+        freight: r.bill_freight_val
+      });
+    }
+  });
+
+  if (lineItems.length === 0 && pur) {
+    lineItems.push({
+      date: pur.party_inv_date,
+      our_invoice_number: pur.party_inv_no || '',
+      truck_no: pur.lorry_vehicle_no || '-',
+      fo_no: pur.fo_no || '-',
+      description: pur.description || pur.expense_acc_name || '-',
+      lr_no: pur.cn_lr_no || '-',
+      freight: pur.bill_freight_val || 0
+    });
+  }
+
+  // Deduplicate line items
+  const seen = new Set();
+  const dedupedLineItems = [...lineItems].reverse().filter(item => {
+    const key = `${item.truck_no||''}|${item.lr_no||''}|${item.date||''}|${item.freight||0}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).reverse();
+
+  // Create Tagging rows
+  const taggingRowsData = dedupedLineItems.map((item) => {
+    return {
+      "TNATURE": (inv && inv.tnature) || (pur && pur.tnature) || '-',
+      "TRANSPORTER CODE / PARTY CODE": (pur && pur.party_code) || (inv && inv.party_code) || '-',
+      "TRANSPORTER NAME": (pur && pur.party_name) || (inv && inv.party_name) || (inv && inv.transporter_name) || '-',
+      "FO NO": item.fo_no || (inv && inv.fo_no) || (pur && pur.fo_no) || '-',
+      "OUR INVOICE NUMBER": item.our_invoice_number || ourInvoiceNo || '-',
+      "CN/LR NO": item.lr_no || (inv && inv.cn_lr_no) || (pur && pur.cn_lr_no) || '-',
+      "CN/LR DATE": formatDateToDDMMYYYY(item.date || (inv && inv.lr_date) || (pur && pur.party_inv_date)),
+      "PARTY INVOICE NUMBER(BILL NO)": (pur && pur.party_inv_no) || (inv && inv.party_inv_no) || '-',
+      "PARTY INVOICE DATE (BILL DATE)": formatDateToDDMMYYYY((pur && pur.party_inv_date) || (inv && inv.invoice_date)),
+      "LORRY NO OR VECHILE NO": item.truck_no || (inv && inv.lorry_vehicle_no) || (pur && pur.lorry_vehicle_no) || '-',
+      "FREIGHT VALUE": item.freight ?? (inv && inv.bill_freight_val) ?? (pur && pur.bill_freight_val) ?? 0,
+      "ST CHARGES": (pur && pur.st_charges) || (inv && inv.st_charges) || 0,
+      "Invoice Value (₹)": (pur && pur.net_payable) || (inv && inv.net_payable) || 0
+    };
+  });
+
+  const ourInvoiceNoStr = String(ourInvoiceNo || (inv && inv.our_bill_no) || (pur && pur.present_our_invoice) || (pur && pur.our_bill_no) || '').trim();
+
+  const matchedPurchasesObj = state.purchases.filter(p => {
+    const pInvNo = String(p.party_inv_no || '').trim();
+    const pOurBill = String(p.present_our_invoice || p.our_bill_no || '').trim();
+    const matchByInvNo = invoiceNumberStr && pInvNo && pInvNo === invoiceNumberStr;
+    const matchByOurBill = ourInvoiceNoStr && pOurBill && pOurBill === ourInvoiceNoStr;
+    return matchByInvNo || matchByOurBill;
+  });
+
+  const isRcmTransaction = (() => {
+    const rcmVal = (pur && pur.rcm) || (inv && inv.RCM) || 0;
+    if (rcmVal > 0) return true;
+    const totalGstValue = ((pur && pur.cgst) || 0) + ((pur && pur.sgst) || 0) + ((pur && pur.igst) || 0) + ((inv && inv.cgst) || 0) + ((inv && inv.sgst) || 0) + ((inv && inv.igst) || 0);
+    const freight = (pur && pur.bill_freight_val) || (inv && inv.bill_freight_val) || 0;
+    if (freight > 0) {
+      const computedGstPercent = totalGstValue / freight;
+      if (computedGstPercent > 0 && computedGstPercent <= 0.055) return true;
+    }
+    const aiSummaryText = (pur && pur.ai_summary) || (inv && inv.ai_summary) || '';
+    if (aiSummaryText.toLowerCase().includes('rcm') || aiSummaryText.toLowerCase().includes('5%')) return true;
+    return false;
+  })();
+
+  const calculatedFallback = (() => {
+    let stateCode = String((pur && pur.stax_code_str) || (inv && inv.stax_code_str) || '').trim();
+    if (!stateCode && inv && inv.transporter_gstin) {
+      stateCode = String(inv.transporter_gstin).trim().substring(0, 2);
+    }
+    if (!stateCode) stateCode = '19'; 
+    const isState19 = stateCode === '19';
+    if (isRcmTransaction) return isState19 ? 'SG01' : 'IG01';
+    return isState19 ? 'GST0' : 'GST1';
+  })();
+
+  const coalescedTaxCritaria = (pur && pur.tax_critaria)
+                           || matchedPurchasesObj.map(p => p.tax_critaria).find(v => v && String(v).trim() !== '') 
+                           || (inv && inv.tax_critaria) 
+                           || calculatedFallback;
+
+  const coalescedProject = (pur && pur.project)
+                        || matchedPurchasesObj.map(p => p.project).find(v => v && String(v).trim() !== '')
+                        || (inv && inv.project)
+                        || "LCPP-POLYPARK01";
+
+  const coalescedProjectCode = (pur && pur.project_code)
+                            || matchedPurchasesObj.map(p => p.project_code).find(v => v && String(v).trim() !== '')
+                            || (inv && inv.project_code)
+                            || "PPU01";
+
+  const coalescedDeparment = (pur && pur.deparment)
+                          || matchedPurchasesObj.map(p => p.deparment).find(v => v && String(v).trim() !== '')
+                          || (inv && inv.deparment)
+                          || "LOGISTICS";
+
+  const coalescedDepermentCode = (pur && pur.deperment_code)
+                              || matchedPurchasesObj.map(p => p.deperment_code).find(v => v && String(v).trim() !== '')
+                              || (inv && inv.deperment_code)
+                              || "LOGSI";
+
+  const bookingData = {
+    "SERISE (MOVE)": (pur && pur.series) || (inv && inv.series) || '-',
+    "SL NO": (pur && pur.party_slno) || (inv && inv.party_slno) || '-',
+    "OUR SL NO": (pur && pur.our_slno) || (inv && inv.our_slno) || '-',
+    "EXPENSE ACC": (pur && pur.expense_acc_name) || (inv && inv.expense_acc_name) || '-',
+    "EXPENSE ACC CODE": (pur && pur.expense_acc_code) || (inv && inv.expense_acc_code) || '-',
+    "SUB ACC": (pur && pur.sub_acc_name) || (inv && inv.sub_acc_name) || '-',
+    "SUB ACC CODE": (pur && pur.sub_acc_code) || (inv && inv.sub_acc_code) || '-',
+    "SERVICE CODE": (pur && pur.service_acc_code) || (inv && inv.service_acc_code) || '-',
+    "SERVICE NAME": (pur && pur.service_acc_name) || (inv && inv.service_acc_name) || '-',
+    "PROJECT": coalescedProject,
+    "PROJECT CODE": coalescedProjectCode,
+    "DEPERMENT": coalescedDeparment,
+    "DEPERMENT CODE": coalescedDepermentCode,
+    "SAC CODE": (pur && pur.sac_code) || (inv && inv.sac_code) || '-',
+    "DIVITION": (pur && pur.div_code) || (inv && inv.div_code) || '-',
+    "ADDON CODE": (pur && pur.addon_code_str) || (inv && inv.addon_code_str) || '-',
+    "TAX CRITARIA": coalescedTaxCritaria,
+    "GST PERCENTAGE": isRcmTransaction ? "5%" : "18%",
+    "TDS PERCENTAGE": (pur && pur.tds_percent) ? `${(pur.tds_percent * 100).toFixed(1)}%` : '0%',
+    "TOTAL NET PAYABLE": (pur && pur.net_payable) || (inv && inv.net_payable) || 0
+  };
+
+  // Merge booking and tagging row side by side
+  if (taggingRowsData.length === 0) {
+    return [ bookingData ];
+  }
+
+  return taggingRowsData.map(tagRow => {
+    return {
+      ...bookingData,
+      ...tagRow
+    };
+  });
+}
+window.generateMergedERPRows = generateMergedERPRows;
+
+// CSV Export utilities
+function exportToCSV(records, filename = 'exported_data.csv') {
+  if (!records || records.length === 0) {
+    showToast('No records to export.', 'warning');
+    return;
+  }
+  const headers = Object.keys(records[0]).filter(k => !k.startsWith('_') && k !== 'array' && k !== 'line_items');
+  const csvRows = [];
+  csvRows.push(headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(','));
+  records.forEach(rec => {
+    const values = headers.map(h => {
+      let val = rec[h];
+      if (val === null || val === undefined) val = '';
+      return `"${String(val).replace(/"/g, '""')}"`;
+    });
+    csvRows.push(values.join(','));
+  });
+  const csvContent = "\ufeff" + csvRows.join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  showToast(`Downloaded ${filename} successfully.`, 'success');
+}
+window.exportToCSV = exportToCSV;
+
+function updateSelectedExportButtonVisibility(type) {
+  const checked = document.querySelectorAll(`.${type}-row-chk:checked`);
+  const btn = document.getElementById(type === 'invoice' ? 'inv-export-selected-btn' : 'pur-export-selected-btn');
+  if (btn) {
+    btn.style.display = checked.length > 0 ? 'inline-block' : 'none';
+    btn.innerHTML = `<i data-lucide="check-square" style="width: 12px; height: 12px; vertical-align: middle; margin-right: 4px;"></i> Export Selected (${checked.length})`;
+  }
+}
+window.updateSelectedExportButtonVisibility = updateSelectedExportButtonVisibility;
+
+// Timezone-proof date converter for comparison
+function dateToYYYYMMDD(dateInput) {
+  if (!dateInput) return 0;
+  const str = String(dateInput).trim();
+  if (str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') return 0;
+
+  // 1. If it's already YYYYMMDD
+  const matchYYYYMMDD = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (matchYYYYMMDD) {
+    return parseInt(str, 10);
+  }
+
+  // 2. If it is YYYY-MM-DD or YYYY-MM-DD ...
+  const matchYMD = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (matchYMD) {
+    return parseInt(`${matchYMD[1]}${matchYMD[2]}${matchYMD[3]}`, 10);
+  }
+
+  // 3. If it is DD-MM-YYYY or DD-MM-YYYY ...
+  const matchDMY = str.match(/^(\d{2})-(\d{2})-(\d{4})/);
+  if (matchDMY) {
+    return parseInt(`${matchDMY[3]}${matchDMY[2]}${matchDMY[1]}`, 10);
+  }
+
+  // 4. If it has slashes (DD/MM/YYYY)
+  const matchDMYSlashes = str.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (matchDMYSlashes) {
+    return parseInt(`${matchDMYSlashes[3]}${matchDMYSlashes[2]}${matchDMYSlashes[1]}`, 10);
+  }
+
+  // 5. General JS Date parsing
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return parseInt(`${yyyy}${mm}${dd}`, 10);
+  }
+
+  return 0;
+}
+window.dateToYYYYMMDD = dateToYYYYMMDD;
+
+function exportRange(type, startDate, endDate) {
+  const startInt = dateToYYYYMMDD(startDate);
+  const endInt = dateToYYYYMMDD(endDate);
+  
+  if (startInt === 0 || endInt === 0) {
+    showToast('Invalid dates selected.', 'error');
+    return;
+  }
+  if (startInt > endInt) {
+    showToast('Start date cannot be after end date.', 'error');
+    return;
+  }
+  const pool = type === 'invoice' ? state.invoices : state.purchases;
+  const matching = pool.filter(item => {
+    const rawDate = item.upload_date || '';
+    if (!rawDate) return false;
+    const itemInt = dateToYYYYMMDD(rawDate);
+    return itemInt >= startInt && itemInt <= endInt;
+  });
+  if (matching.length === 0) {
+    showToast('No records found within this range.', 'warning');
+    return;
+  }
+
+  const mergedRows = [];
+  matching.forEach(rec => {
+    const invNo = rec.invoice_number || rec.party_inv_no;
+    if (invNo) {
+      const rows = generateMergedERPRows(invNo);
+      mergedRows.push(...rows);
+    }
+  });
+
+  exportToCSV(mergedRows, `${type}s_range_${startDate}_to_${endDate}.csv`);
+}
+
+function initExportAndSelection() {
+  const selectAllInv = document.getElementById('select-all-invoices-chk');
+  if (selectAllInv) {
+    selectAllInv.addEventListener('change', () => {
+      const chks = document.querySelectorAll('.invoice-row-chk');
+      chks.forEach(chk => {
+        chk.checked = selectAllInv.checked;
+      });
+      updateSelectedExportButtonVisibility('invoice');
+    });
+  }
+
+  const selectAllPur = document.getElementById('select-all-purchases-chk');
+  if (selectAllPur) {
+    selectAllPur.addEventListener('change', () => {
+      const chks = document.querySelectorAll('.purchase-row-chk');
+      chks.forEach(chk => {
+        chk.checked = selectAllPur.checked;
+      });
+      updateSelectedExportButtonVisibility('purchase');
+    });
+  }
+
+  const invRangeBtn = document.getElementById('inv-export-range-btn');
+  if (invRangeBtn) {
+    invRangeBtn.addEventListener('click', () => {
+      const startVal = document.getElementById('inv-export-start').value;
+      const endVal = document.getElementById('inv-export-end').value;
+      if (!startVal || !endVal) {
+        showToast('Please select start and end dates first.', 'warning');
+        return;
+      }
+      exportRange('invoice', startVal, endVal);
+    });
+  }
+
+  const purRangeBtn = document.getElementById('pur-export-range-btn');
+  if (purRangeBtn) {
+    purRangeBtn.addEventListener('click', () => {
+      const startVal = document.getElementById('pur-export-start').value;
+      const endVal = document.getElementById('pur-export-end').value;
+      if (!startVal || !endVal) {
+        showToast('Please select start and end dates first.', 'warning');
+        return;
+      }
+      exportRange('purchase', startVal, endVal);
+    });
+  }
+
+  const invSelectedBtn = document.getElementById('inv-export-selected-btn');
+  if (invSelectedBtn) {
+    invSelectedBtn.addEventListener('click', () => {
+      const checked = document.querySelectorAll('.invoice-row-chk:checked');
+      const selectedIds = Array.from(checked).map(c => c.getAttribute('data-id'));
+      const selectedRows = state.invoices.filter(i => selectedIds.includes(String(i.id)));
+      
+      const mergedRows = [];
+      selectedRows.forEach(rec => {
+        const invNo = rec.invoice_number || rec.party_inv_no;
+        if (invNo) {
+          const rows = generateMergedERPRows(invNo);
+          mergedRows.push(...rows);
+        }
+      });
+
+      exportToCSV(mergedRows, `selected_invoices.csv`);
+    });
+  }
+
+  const purSelectedBtn = document.getElementById('pur-export-selected-btn');
+  if (purSelectedBtn) {
+    purSelectedBtn.addEventListener('click', () => {
+      const checked = document.querySelectorAll('.purchase-row-chk:checked');
+      const selectedIds = Array.from(checked).map(c => c.getAttribute('data-id'));
+      const selectedRows = state.purchases.filter(p => selectedIds.includes(String(p.id)));
+      
+      const mergedRows = [];
+      selectedRows.forEach(rec => {
+        const invNo = rec.invoice_number || rec.party_inv_no;
+        if (invNo) {
+          const rows = generateMergedERPRows(invNo);
+          mergedRows.push(...rows);
+        }
+      });
+
+      exportToCSV(mergedRows, `selected_purchases.csv`);
+    });
+  }
+}
+window.initExportAndSelection = initExportAndSelection;
+
 // ----------------- LEDGERS RENDERERS -----------------
+const sortByUploadDate = (arr) => {
+  return [...arr].sort((a, b) => {
+    const timeA = parseDateForSort(a.upload_date);
+    const timeB = parseDateForSort(b.upload_date);
+    
+    if (timeA === 0 && timeB !== 0) return 1;
+    if (timeA !== 0 && timeB === 0) return -1;
+    if (timeA === 0 && timeB === 0) return 0;
+    
+    return timeB - timeA;
+  });
+};
+
+function parseDateForSort(dateStr) {
+  if (!dateStr) return 0;
+  const str = String(dateStr).trim();
+  if (str === '' || str.toLowerCase() === 'undefined' || str.toLowerCase() === 'null') return 0;
+  
+  const matchYYYYMMDD = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (matchYYYYMMDD) {
+    return new Date(`${matchYYYYMMDD[1]}-${matchYYYYMMDD[2]}-${matchYYYYMMDD[3]}`).getTime();
+  }
+  const matchYMD = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (matchYMD) {
+    return new Date(`${matchYMD[1]}-${matchYMD[2]}-${matchYMD[3]}`).getTime();
+  }
+  const matchDMY = str.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (matchDMY) {
+    return new Date(`${matchDMY[3]}-${matchDMY[2]}-${matchDMY[1]}`).getTime();
+  }
+  const matchDMYSlashes = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (matchDMYSlashes) {
+    return new Date(`${matchDMYSlashes[3]}-${matchDMYSlashes[2]}-${matchDMYSlashes[1]}`).getTime();
+  }
+  
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
 function renderInvoicesLedger() {
   const body = document.getElementById('invoices-table-body');
   body.innerHTML = '';
@@ -1566,9 +2153,94 @@ function renderInvoicesLedger() {
     return;
   }
 
-  filtered.forEach(inv => {
+  // Reset Select All Checkbox
+  const selectAllInv = document.getElementById('select-all-invoices-chk');
+  if (selectAllInv) selectAllInv.checked = false;
+  updateSelectedExportButtonVisibility('invoice');
+
+  let lastDate = null;
+  const sortedFiltered = sortByUploadDate(filtered);
+
+  sortedFiltered.forEach(inv => {
+    const rawDate = inv.upload_date || '';
+    const currentDate = rawDate ? formatToDDMMYYYY(rawDate) : 'No Upload Date';
+    const groupClass = 'date-group-' + currentDate.replace(/[^a-zA-Z0-9]/g, '_');
+
+    if (currentDate !== lastDate) {
+      lastDate = currentDate;
+      const dividerTr = document.createElement('tr');
+      dividerTr.className = 'table-date-divider-row';
+      dividerTr.style = "background: rgba(162, 95, 255, 0.08) !important; cursor: pointer;";
+      dividerTr.setAttribute('data-target-group', groupClass);
+      
+      if (currentDate === 'No Upload Date') {
+        dividerTr.innerHTML = `
+          <td colspan="16" style="padding: 10px 16px; font-weight: 700; font-size: 0.8rem; color: var(--text-muted); text-align: left; background-color: rgba(255, 255, 255, 0.02); border-left: 4px solid var(--text-muted);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle;"></i></span>
+                <i data-lucide="help-circle" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle;"></i>
+                <span>Other Records (No Upload Date)</span>
+              </div>
+              <button class="btn btn-secondary btn-xs export-date-btn" data-date="No Upload Date" style="padding: 2px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); cursor: pointer; color: var(--text-main);"><i data-lucide="download" style="width: 10px; height: 10px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i> Export Others</button>
+            </div>
+          </td>
+        `;
+      } else {
+        dividerTr.innerHTML = `
+          <td colspan="16" style="padding: 10px 16px; font-weight: 700; font-size: 0.8rem; color: var(--accent-purple); text-align: left; background-color: rgba(162, 95, 255, 0.05); border-left: 4px solid var(--accent-purple);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle; color: var(--accent-purple);"></i></span>
+                <i data-lucide="calendar" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; color: var(--accent-purple);"></i>
+                <span>Uploaded Date: ${currentDate}</span>
+              </div>
+              <button class="btn btn-primary btn-xs export-date-btn" data-date="${currentDate}" style="padding: 2px 8px; font-size: 0.7rem; border-radius: 4px; background-color: var(--accent-purple); border: none; cursor: pointer; color: white;"><i data-lucide="download" style="width: 10px; height: 10px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i> Export Day</button>
+            </div>
+          </td>
+        `;
+      }
+      
+      dividerTr.addEventListener('click', () => {
+        const target = dividerTr.getAttribute('data-target-group');
+        const isCollapsed = dividerTr.classList.toggle('collapsed');
+        const icon = dividerTr.querySelector('.collapse-indicator');
+        if (icon) {
+          icon.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+        }
+        document.querySelectorAll('.' + target).forEach(row => {
+          row.style.display = isCollapsed ? 'none' : '';
+        });
+      });
+
+      const exportBtn = dividerTr.querySelector('.export-date-btn');
+      if (exportBtn) {
+        exportBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetDate = exportBtn.getAttribute('data-date');
+          const dateRows = filtered.filter(item => {
+            const rawDate = item.upload_date || '';
+            return (rawDate ? formatToDDMMYYYY(rawDate) : 'No Upload Date') === targetDate;
+          });
+          
+          const mergedRows = [];
+          dateRows.forEach(rec => {
+            const invNo = rec.invoice_number || rec.party_inv_no;
+            if (invNo) {
+              const rows = generateMergedERPRows(invNo);
+              mergedRows.push(...rows);
+            }
+          });
+          
+          exportToCSV(mergedRows, `invoices_${targetDate}.csv`);
+        });
+      }
+      
+      body.appendChild(dividerTr);
+    }
+
     const tr = document.createElement('tr');
-    tr.className = 'clickable-row';    
+    tr.className = 'clickable-row ' + groupClass;    
     // Check if matching purchase record has validation failures or missing FO/Invoice number
     const matchingPur = [...state.purchases].reverse().find(p => String(p.party_inv_no) === String(inv.invoice_number) && p.bill_freight_val === inv.bill_freight_val);
     const isWrong = matchingPur ? hasValidationFailures(matchingPur) : false;
@@ -1591,6 +2263,7 @@ function renderInvoicesLedger() {
     const pdfIconHtml = `<span class="open-pdf-icon" onclick="event.stopPropagation(); window.openRecordPdf('${escapeHtml(inv.invoice_number)}');" title="View PDF bill" style="margin-left: 6px; color: var(--accent-red); vertical-align: middle; cursor: pointer;"><i data-lucide="file-text" style="width: 14px; height: 14px; display: inline-block; pointer-events: none;"></i></span>`;
 
     tr.innerHTML = `
+      <td onclick="event.stopPropagation();" style="text-align: center;"><input type="checkbox" class="invoice-row-chk" data-id="${inv.id}" style="cursor: pointer;"></td>
       <td class="editable-cell" data-id="${inv.id}" data-field="invoice_number" data-type="invoice" title="Double click to edit inline">
         <strong>${escapeHtml(inv.invoice_number)}</strong>
         ${alertIcon}
@@ -1645,7 +2318,7 @@ function renderInvoicesLedger() {
     const delBtn = tr.querySelector('.delete-invoice-btn');
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      deleteInvoiceRecord(inv.invoice_number);
+      deleteInvoiceRecord(inv);
     });
 
     // Add inline double-click listener to cells with class 'editable-cell'
@@ -1656,8 +2329,22 @@ function renderInvoicesLedger() {
       });
     });
 
+    const rowChk = tr.querySelector('.invoice-row-chk');
+    if (rowChk) {
+      rowChk.addEventListener('change', () => {
+        updateSelectedExportButtonVisibility('invoice');
+      });
+    }
+
     body.appendChild(tr);
   });
+
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons({
+      attrs: { class: 'lucide' },
+      nameAttr: 'data-lucide'
+    });
+  }
 }
 
 function renderPurchasesLedger() {
@@ -1686,10 +2373,95 @@ function renderPurchasesLedger() {
     body.innerHTML = `<tr><td colspan="15" class="text-center text-muted">No purchases match selected search criteria.</td></tr>`;
   }
 
-  filtered.forEach(pur => {
+  // Reset Select All Checkbox
+  const selectAllPur = document.getElementById('select-all-purchases-chk');
+  if (selectAllPur) selectAllPur.checked = false;
+  updateSelectedExportButtonVisibility('purchase');
+
+  let lastDate = null;
+  const sortedFiltered = sortByUploadDate(filtered);
+
+  sortedFiltered.forEach(pur => {
+    const rawDate = pur.upload_date || '';
+    const currentDate = rawDate ? formatToDDMMYYYY(rawDate) : 'No Upload Date';
+    const groupClass = 'date-group-' + currentDate.replace(/[^a-zA-Z0-9]/g, '_');
+
+    if (currentDate !== lastDate) {
+      lastDate = currentDate;
+      const dividerTr = document.createElement('tr');
+      dividerTr.className = 'table-date-divider-row';
+      dividerTr.style = "background: rgba(162, 95, 255, 0.08) !important; cursor: pointer;";
+      dividerTr.setAttribute('data-target-group', groupClass);
+      
+      if (currentDate === 'No Upload Date') {
+        dividerTr.innerHTML = `
+          <td colspan="16" style="padding: 10px 16px; font-weight: 700; font-size: 0.8rem; color: var(--text-muted); text-align: left; background-color: rgba(255, 255, 255, 0.02); border-left: 4px solid var(--text-muted);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle;"></i></span>
+                <i data-lucide="help-circle" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle;"></i>
+                <span>Other Records (No Upload Date)</span>
+              </div>
+              <button class="btn btn-secondary btn-xs export-date-btn" data-date="No Upload Date" style="padding: 2px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); cursor: pointer; color: var(--text-main);"><i data-lucide="download" style="width: 10px; height: 10px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i> Export Others</button>
+            </div>
+          </td>
+        `;
+      } else {
+        dividerTr.innerHTML = `
+          <td colspan="16" style="padding: 10px 16px; font-weight: 700; font-size: 0.8rem; color: var(--accent-purple); text-align: left; background-color: rgba(162, 95, 255, 0.05); border-left: 4px solid var(--accent-purple);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="collapse-indicator" style="transition: transform 0.2s; display: inline-block; transform: rotate(0deg);"><i data-lucide="chevron-down" style="width: 14px; height: 14px; vertical-align: middle; color: var(--accent-purple);"></i></span>
+                <i data-lucide="calendar" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; color: var(--accent-purple);"></i>
+                <span>Uploaded Date: ${currentDate}</span>
+              </div>
+              <button class="btn btn-primary btn-xs export-date-btn" data-date="${currentDate}" style="padding: 2px 8px; font-size: 0.7rem; border-radius: 4px; background-color: var(--accent-purple); border: none; cursor: pointer; color: white;"><i data-lucide="download" style="width: 10px; height: 10px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i> Export Day</button>
+            </div>
+          </td>
+        `;
+      }
+      
+      dividerTr.addEventListener('click', () => {
+        const target = dividerTr.getAttribute('data-target-group');
+        const isCollapsed = dividerTr.classList.toggle('collapsed');
+        const icon = dividerTr.querySelector('.collapse-indicator');
+        if (icon) {
+          icon.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+        }
+        document.querySelectorAll('.' + target).forEach(row => {
+          row.style.display = isCollapsed ? 'none' : '';
+        });
+      });
+
+      const exportBtn = dividerTr.querySelector('.export-date-btn');
+      if (exportBtn) {
+        exportBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetDate = exportBtn.getAttribute('data-date');
+          const dateRows = filtered.filter(item => {
+            const rawDate = item.upload_date || '';
+            return (rawDate ? formatToDDMMYYYY(rawDate) : 'No Upload Date') === targetDate;
+          });
+          
+          const mergedRows = [];
+          dateRows.forEach(rec => {
+            const invNo = rec.invoice_number || rec.party_inv_no;
+            if (invNo) {
+              const rows = generateMergedERPRows(invNo);
+              mergedRows.push(...rows);
+            }
+          });
+          
+          exportToCSV(mergedRows, `purchases_${targetDate}.csv`);
+        });
+      }
+      
+      body.appendChild(dividerTr);
+    }
+
     const tr = document.createElement('tr');
     const isWrong = hasValidationFailures(pur);
-    tr.className = 'clickable-row';
+    tr.className = 'clickable-row ' + groupClass;
     if (isWrong) {
       tr.style.backgroundColor = 'var(--accent-red-glow)';
       tr.style.borderLeft = '4px solid var(--accent-red)';
@@ -1699,6 +2471,7 @@ function renderPurchasesLedger() {
     const pdfIconHtml = `<span class="open-pdf-icon" onclick="event.stopPropagation(); window.openRecordPdf('${escapeHtml(pur.party_inv_no)}');" title="View PDF bill" style="margin-left: 6px; color: var(--accent-red); vertical-align: middle; cursor: pointer;"><i data-lucide="file-text" style="width: 14px; height: 14px; display: inline-block; pointer-events: none;"></i></span>`;
 
     tr.innerHTML = `
+      <td onclick="event.stopPropagation();" style="text-align: center;"><input type="checkbox" class="purchase-row-chk" data-id="${pur.id}" style="cursor: pointer;"></td>
       <td class="editable-cell" data-id="${pur.id}" data-field="party_inv_no" data-type="purchase" title="Double click to edit inline">
         <strong>${escapeHtml(pur.party_inv_no)}</strong>
         ${pdfIconHtml}
@@ -1751,7 +2524,7 @@ function renderPurchasesLedger() {
     const delPurBtn = tr.querySelector('.delete-purchase-btn');
     delPurBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      deleteInvoiceRecord(pur.party_inv_no);
+      deleteInvoiceRecord(pur);
     });
 
     tr.querySelectorAll('.editable-cell').forEach(cell => {
@@ -1761,8 +2534,22 @@ function renderPurchasesLedger() {
       });
     });
 
+    const rowChk = tr.querySelector('.purchase-row-chk');
+    if (rowChk) {
+      rowChk.addEventListener('change', () => {
+        updateSelectedExportButtonVisibility('purchase');
+      });
+    }
+
     body.appendChild(tr);
   });
+
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons({
+      attrs: { class: 'lucide' },
+      nameAttr: 'data-lucide'
+    });
+  }
 }
 
 function renderReconciliation() {
@@ -2419,9 +3206,14 @@ function buildERPRowsView(invoice, purchase) {
             <i data-lucide="tag" style="color: var(--accent-purple); width: 18px; height: 18px;"></i>
             ERP Tagging Row Data (${taggingRowsData.length} Row(s))
           </h3>
-          <button class="btn btn-primary btn-xs" id="copy-tagging-all-btn" style="padding: 6px 12px; font-size: 0.8rem; display: flex; align-items: center; gap: 4px;">
-            <i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copy All Rows (Excel/TSV)
-          </button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-purple btn-xs" id="copy-merged-erp-btn" style="padding: 6px 12px; font-size: 0.8rem; display: flex; align-items: center; gap: 4px; background-color: var(--accent-purple); border: none; color: white;">
+              <i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copy Merged ERP Rows (Excel/TSV)
+            </button>
+            <button class="btn btn-primary btn-xs" id="copy-tagging-all-btn" style="padding: 6px 12px; font-size: 0.8rem; display: flex; align-items: center; gap: 4px;">
+              <i data-lucide="copy" style="width: 14px; height: 14px;"></i> Copy Tagging Rows Only
+            </button>
+          </div>
         </div>
         <div class="table-responsive border rounded" style="overflow-x: auto;">
           <table class="data-table data-table-sm" style="white-space: nowrap; width: 100%;">
@@ -2495,6 +3287,25 @@ function buildERPRowsView(invoice, purchase) {
   `;
 
   // Attach copy event listeners
+  document.getElementById('copy-merged-erp-btn').addEventListener('click', () => {
+    const mergedRows = generateMergedERPRows(invoiceNumberStr);
+    if (mergedRows.length === 0) {
+      showToast('No ERP rows to copy', 'warning');
+      return;
+    }
+    const headers = Object.keys(mergedRows[0]);
+    const headerLine = headers.join('\t');
+    const rowLines = mergedRows.map(row => Object.values(row).join('\t')).join('\n');
+    const tsvContent = headerLine + '\n' + rowLines;
+
+    navigator.clipboard.writeText(tsvContent).then(() => {
+      showToast('Merged ERP Booking & Tagging rows copied to clipboard!', 'success');
+    }).catch(err => {
+      console.error('Failed to copy TSV: ', err);
+      showToast('Failed to copy merged ERP data', 'error');
+    });
+  });
+
   document.getElementById('copy-tagging-all-btn').addEventListener('click', () => {
     const tsvContent = taggingRowsData.map(row => Object.values(row).join('\t')).join('\n');
     navigator.clipboard.writeText(tsvContent).then(() => {
@@ -2733,7 +3544,7 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
       const embedUrl = getGoogleDriveEmbedUrl(invoice.pdf_url);
       pdfContainer.innerHTML = `
         <div style="border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); margin-bottom: 10px; height: 320px;">
-          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>
+          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;" allow="unload"></iframe>
         </div>
         <div class="pdf-attachment-card">
           <div class="pdf-attachment-info">
@@ -2995,7 +3806,7 @@ function buildPurchaseDetailsView(purchase, groupRecords) {
       const embedUrl = getGoogleDriveEmbedUrl(purchase.pdf_url);
       purchasePdfContainer.innerHTML = `
         <div style="border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); margin-bottom: 10px; height: 320px;">
-          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;"></iframe>
+          <iframe src="${escapeHtml(embedUrl)}" style="width: 100%; height: 100%; border: none; display: block;" allow="unload"></iframe>
         </div>
         <div class="pdf-attachment-card">
           <div class="pdf-attachment-info">
@@ -3490,41 +4301,69 @@ async function deleteActiveRecord() {
 }
 
 async function deleteInvoiceRecord(target) {
-  let invoiceNumber = target;
-  if (typeof target === 'string' && (target.startsWith('inv-') || target.startsWith('pur-'))) {
+  let record = null;
+  let isInvoice = true;
+
+  if (typeof target === 'object' && target !== null) {
+    record = target;
+    isInvoice = record.id.startsWith('inv-');
+  } else if (typeof target === 'string') {
     if (target.startsWith('inv-')) {
-      const inv = state.invoices.find(i => i.id === target);
-      if (inv) invoiceNumber = inv.invoice_number;
-    } else {
-      const pur = state.purchases.find(p => p.id === target);
-      if (pur) invoiceNumber = pur.party_inv_no;
+      record = state.invoices.find(i => i.id === target);
+      isInvoice = true;
+    } else if (target.startsWith('pur-')) {
+      record = state.purchases.find(p => p.id === target);
+      isInvoice = false;
     }
   }
 
-  if (!confirm(`Delete invoice "${invoiceNumber}" and all linked purchase records?`)) return;
+  if (!record) {
+    showToast("Could not locate the specific record to delete.", "error");
+    return;
+  }
 
-  showToast(`Deleting invoice ${invoiceNumber} from Google Sheets...`, "warning");
+  const invoiceNumber = isInvoice ? record.invoice_number : record.party_inv_no;
+  const vehicle = record.lorry_vehicle_no || '';
+  const freight = record.bill_freight_val || 0;
+
+  if (!confirm(`Are you sure you want to delete this specific row for invoice "${invoiceNumber}" (Vehicle: ${vehicle || 'N/A'}, Freight: ${formatCurrency(freight)})?`)) {
+    return;
+  }
+
+  showToast(`Deleting specific row for invoice ${invoiceNumber} from Google Sheets...`, "warning");
 
   try {
-    const response = await fetch(`${SERVER_BASE_URL}/api/delete-invoice/${encodeURIComponent(invoiceNumber)}`, {
-      method: 'DELETE'
+    const response = await fetch(`${SERVER_BASE_URL}/api/delete-invoice`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        invoice_number: invoiceNumber,
+        lorry_vehicle_no: vehicle,
+        bill_freight_val: freight
+      })
     });
     
     const result = await response.json();
     if (result.success) {
-      showToast(`Record ${invoiceNumber} deleted from Google Sheets!`, "success");
+      showToast(`Record deleted from Google Sheets successfully!`, "success");
       
-      state.invoices = state.invoices.filter(i => i.invoice_number !== invoiceNumber);
-      state.purchases = state.purchases.filter(p => p.party_inv_no !== invoiceNumber);
-
-
+      // Filter out only this specific row by its unique ID
+      if (isInvoice) {
+        state.invoices = state.invoices.filter(i => i.id !== record.id);
+        // Also remove matching purchase record if freight matches
+        state.purchases = state.purchases.filter(p => !(String(p.party_inv_no) === String(invoiceNumber) && p.bill_freight_val === freight));
+      } else {
+        state.purchases = state.purchases.filter(p => p.id !== record.id);
+        // Also remove matching invoice record if freight and vehicle match
+        state.invoices = state.invoices.filter(i => !(String(i.invoice_number) === String(invoiceNumber) && i.bill_freight_val === freight));
+      }
 
       saveToLocalStorage();
-      
-      // Trigger a live data reload to refresh database from sheet
       await syncWithAPI(false);
     } else {
-      showToast(`Spreadsheet delete failed: ${result.message || 'Unknown error'}`, "error");
+      showToast(`Spreadsheet delete failed: ${result.error || result.message || 'Unknown error'}`, "error");
     }
   } catch (err) {
     console.error(err);
@@ -3683,6 +4522,14 @@ function submitNewManualRecord() {
   saveToLocalStorage();
 
   // Call Google Sheets writeback for both invoice and purchase manually created records
+  const todayYYYYMMDD = (() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}${mm}${dd}`;
+  })();
+
   sendSheetUpdate('invoice', invoiceNumber, {
     invoice_number: invoiceNumber,
     invoice_date: formData.get('invoice_date'),
@@ -3692,7 +4539,8 @@ function submitNewManualRecord() {
     lorry_vehicle_no: formData.get('lorry_vehicle_no'),
     bill_freight_val: parseFloat(formData.get('bill_freight_val') || 0),
     net_payable: parseFloat(formData.get('net_payable') || 0),
-    RCM: parseFloat(formData.get('RCM') || 0)
+    RCM: parseFloat(formData.get('RCM') || 0),
+    upload_date: todayYYYYMMDD
   }, newInv);
 
   sendSheetUpdate('purchase', invoiceNumber, {
@@ -3708,7 +4556,8 @@ function submitNewManualRecord() {
     taxable_value: parseFloat(formData.get('taxable_value') || 0),
     tds_percent: parseFloat(formData.get('tds_percent') || 0),
     net_payable: parseFloat(formData.get('net_payable') || 0),
-    rcm: parseFloat(formData.get('RCM') || 0)
+    rcm: parseFloat(formData.get('RCM') || 0),
+    upload_date: todayYYYYMMDD
   }, newPur);
 
   showToast(`Record ${invoiceNumber} created!`, "success");

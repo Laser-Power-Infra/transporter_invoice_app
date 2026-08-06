@@ -292,9 +292,23 @@
               </select>
             </div>
           </div>
-          <div class="filters-footer">
-            <span class="results-count" id="invoice-results-count">Showing 0 records</span>
-            <button class="btn btn-secondary btn-sm" id="clear-inv-filters">Reset Filters</button>
+          <div class="filters-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <span class="results-count" id="invoice-results-count">Showing 0 records</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <!-- Date range fields -->
+              <div style="display: flex; align-items: center; gap: 6px; font-size: 0.775rem;">
+                <label style="color: var(--text-muted); font-weight: 600;">Upload Range:</label>
+                <input type="date" id="inv-export-start" class="form-control" style="width: 125px; padding: 4px 8px; font-size: 0.75rem; background: var(--bg-darker); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 4px;">
+                <span style="color: var(--text-muted);">to</span>
+                <input type="date" id="inv-export-end" class="form-control" style="width: 125px; padding: 4px 8px; font-size: 0.75rem; background: var(--bg-darker); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 4px;">
+                <button class="btn btn-primary btn-sm" id="inv-export-range-btn" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px;"><i data-lucide="download" style="width: 12px; height: 12px; vertical-align: middle; margin-right: 4px;"></i> Export Range</button>
+              </div>
+              
+              <button class="btn btn-secondary btn-sm" id="inv-export-selected-btn" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px; display: none;"><i data-lucide="check-square" style="width: 12px; height: 12px; vertical-align: middle; margin-right: 4px;"></i> Export Selected</button>
+              <button class="btn btn-secondary btn-sm" id="clear-inv-filters">Reset Filters</button>
+            </div>
           </div>
         </div>
 
@@ -304,6 +318,7 @@
             <table class="data-table">
               <thead>
                 <tr>
+                  <th style="width: 40px; text-align: center;"><input type="checkbox" id="select-all-invoices-chk" style="cursor: pointer;"></th>
                   <th>Invoice No</th>
                   <th>Invoice Date</th>
                   <th>Party Name</th>
@@ -364,9 +379,23 @@
               </select>
             </div>
           </div>
-          <div class="filters-footer">
-            <span class="results-count" id="purchase-results-count">Showing 0 records</span>
-            <button class="btn btn-secondary btn-sm" id="clear-pur-filters">Reset Filters</button>
+          <div class="filters-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <span class="results-count" id="purchase-results-count">Showing 0 records</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <!-- Date range fields -->
+              <div style="display: flex; align-items: center; gap: 6px; font-size: 0.775rem;">
+                <label style="color: var(--text-muted); font-weight: 600;">Upload Range:</label>
+                <input type="date" id="pur-export-start" class="form-control" style="width: 125px; padding: 4px 8px; font-size: 0.75rem; background: var(--bg-darker); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 4px;">
+                <span style="color: var(--text-muted);">to</span>
+                <input type="date" id="pur-export-end" class="form-control" style="width: 125px; padding: 4px 8px; font-size: 0.75rem; background: var(--bg-darker); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 4px;">
+                <button class="btn btn-primary btn-sm" id="pur-export-range-btn" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px;"><i data-lucide="download" style="width: 12px; height: 12px; vertical-align: middle; margin-right: 4px;"></i> Export Range</button>
+              </div>
+              
+              <button class="btn btn-secondary btn-sm" id="pur-export-selected-btn" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px; display: none;"><i data-lucide="check-square" style="width: 12px; height: 12px; vertical-align: middle; margin-right: 4px;"></i> Export Selected</button>
+              <button class="btn btn-secondary btn-sm" id="clear-pur-filters">Reset Filters</button>
+            </div>
           </div>
         </div>
 
@@ -376,6 +405,7 @@
             <table class="data-table">
               <thead>
                 <tr>
+                  <th style="width: 40px; text-align: center;"><input type="checkbox" id="select-all-purchases-chk" style="cursor: pointer;"></th>
                   <th>Inv No</th>
                   <th>Inv Date</th>
                   <th>Party Name</th>
