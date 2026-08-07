@@ -2088,7 +2088,7 @@ function initExportAndSelection() {
 window.initExportAndSelection = initExportAndSelection;
 
 // ---------- Agent Webhook Notifications Polling ----------
-let lastSeenNotificationId = null;
+let lastSeenNotificationId = localStorage.getItem('last_seen_notification_id');
 
 function initAgentNotificationPolling() {
   const closeBtn = document.getElementById('agent-notification-close');
@@ -2114,9 +2114,17 @@ async function pollAgentNotification() {
     const data = await resp.json();
     if (data.success && data.notification) {
       const note = data.notification;
+      
+      // Ignore old notifications cached on the server to prevent popups on reload (30s limit)
+      const ageMs = Date.now() - (note.timestamp || 0);
+      if (ageMs > 30000) {
+        return;
+      }
+
       if (note.id !== lastSeenNotificationId) {
         lastSeenNotificationId = note.id;
-        showAgentNotificationToggle(note.type, note.message);
+        localStorage.setItem('last_seen_notification_id', note.id);
+        showAgentNotificationToggle(note.type, note.message, note.id);
       }
     }
   } catch (e) {
@@ -2124,7 +2132,7 @@ async function pollAgentNotification() {
   }
 }
 
-function showAgentNotificationToggle(type, message) {
+function showAgentNotificationToggle(type, message, id) {
   const banner = document.getElementById('agent-notification-banner');
   const msgEl = document.getElementById('agent-notification-message');
   const iconContainer = document.getElementById('agent-notification-icon-container');
@@ -2154,6 +2162,13 @@ function showAgentNotificationToggle(type, message) {
       nameAttr: 'data-lucide'
     });
   }
+
+  // Auto-dismiss/hide the banner after 30 seconds (30000ms)
+  setTimeout(() => {
+    if (msgEl.textContent === message && banner.style.display === 'flex') {
+      banner.style.display = 'none';
+    }
+  }, 30000);
 }
 window.showAgentNotificationToggle = showAgentNotificationToggle;
 
