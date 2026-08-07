@@ -4818,6 +4818,26 @@ function handleUploadFile(file) {
   const progressFilename = document.getElementById('progress-filename');
   const logList = document.getElementById('upload-log-list');
 
+  const dropzone = document.getElementById('pdf-upload-dropzone');
+  if (dropzone) dropzone.classList.add('uploading');
+
+  // Cycle status texts for premium auditor vibe
+  const statusLabel = document.getElementById('agentic-status-label');
+  const statusMessages = [
+    "Initializing AI Auditor...",
+    "Reading document structure...",
+    "Extracting invoice details...",
+    "Verifying ledger parameters...",
+    "Performing validation checklist...",
+    "Linking to Google Drive vault..."
+  ];
+  let msgIdx = 0;
+  if (statusLabel) statusLabel.textContent = statusMessages[0];
+  const statusInterval = setInterval(() => {
+    msgIdx = (msgIdx + 1) % statusMessages.length;
+    if (statusLabel) statusLabel.textContent = statusMessages[msgIdx];
+  }, 1800);
+
   progressBox.classList.remove('hidden');
   progressFilename.textContent = file.name;
   progressBar.style.width = '10%';
@@ -4840,6 +4860,7 @@ function handleUploadFile(file) {
   });
 
   xhr.addEventListener('load', () => {
+    clearInterval(statusInterval);
     progressBar.style.width = '100%';
     progressPercent.textContent = '100%';
 
@@ -4895,6 +4916,9 @@ function handleUploadFile(file) {
       addUploadLog(file.name, 'error');
     }
 
+    const dz = document.getElementById('pdf-upload-dropzone');
+    if (dz) dz.classList.remove('uploading');
+
     setTimeout(() => {
       progressBox.classList.add('hidden');
       progressBar.style.width = '0%';
@@ -4903,6 +4927,10 @@ function handleUploadFile(file) {
   });
 
   xhr.addEventListener('error', () => {
+    clearInterval(statusInterval);
+    const dz = document.getElementById('pdf-upload-dropzone');
+    if (dz) dz.classList.remove('uploading');
+
     showToast('Upload failed — cannot reach server.', 'error');
     addUploadLog(file.name, 'error');
     setTimeout(() => {

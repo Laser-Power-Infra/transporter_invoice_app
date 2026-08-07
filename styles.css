@@ -1754,3 +1754,157 @@ textarea.form-control {
   background-color: rgba(168, 85, 247, 0.1) !important;
   color: var(--accent-purple) !important;
 }
+
+/* ==========================================================================
+   AGENTIC AI UPLOAD SCANNER STYLES - BIG 4 PREMIUM EDITION
+   ========================================================================= */
+.agentic-wave-container {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+}
+
+.pdf-dropzone.uploading .agentic-wave-container {
+  display: flex;
+}
+
+.pdf-dropzone.uploading .dropzone-icon,
+.pdf-dropzone.uploading p,
+.pdf-dropzone.uploading span {
+  display: none !important;
+}
+
+/* Glassmorphic Radar Circles */
+.radar-scanner {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.radar-circle {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(162, 95, 255, 0.25);
+  border-radius: 50%;
+  animation: radarPulse 2.4s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+  background: radial-gradient(circle, rgba(162, 95, 255, 0.05) 0%, transparent 70%);
+}
+
+.radar-circle:nth-child(2) {
+  animation-delay: 0.8s;
+}
+
+.radar-circle:nth-child(3) {
+  animation-delay: 1.6s;
+}
+
+/* Glowing Rotating Core */
+.radar-core {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-purple), #ff4d6d);
+  box-shadow: 0 0 20px rgba(162, 95, 255, 0.6);
+  animation: coreRotate 3s linear infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.radar-core::after {
+  content: '';
+  width: 28px;
+  height: 28px;
+  background: var(--bg-darker);
+  border-radius: 50%;
+  display: block;
+}
+
+@keyframes radarPulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+@keyframes coreRotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Text status loader */
+.agentic-status-text {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-highlight);
+  letter-spacing: 0.5px;
+  animation: textFlicker 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes textFlicker {
+  0% { opacity: 0.6; }
+  100% { opacity: 1; text-shadow: 0 0 8px rgba(162, 95, 255, 0.3); }
+}
+
+/* Premium Scanner Bar */
+.pdf-dropzone {
+  position: relative;
+  overflow: hidden;
+}
+
+.pdf-dropzone .scanner-line {
+  display: none;
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 60px;
+  background: linear-gradient(180deg, rgba(162, 95, 255, 0.15) 0%, rgba(162, 95, 255, 0.02) 100%);
+  border-top: 2px solid var(--accent-purple);
+  box-shadow: 0 -4px 15px rgba(162, 95, 255, 0.25);
+  animation: scanEffect 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.pdf-dropzone.uploading {
+  border-color: rgba(162, 95, 255, 0.5) !important;
+  background: rgba(162, 95, 255, 0.02) !important;
+  backdrop-filter: blur(12px);
+  box-shadow: inset 0 0 15px rgba(162, 95, 255, 0.05);
+}
+
+.pdf-dropzone.uploading .scanner-line {
+  display: block;
+}
+
+@keyframes scanEffect {
+  0% {
+    top: -10%;
+    transform: translateY(0);
+  }
+  50% {
+    top: 90%;
+    transform: translateY(0);
+    background: linear-gradient(180deg, rgba(255, 77, 109, 0.15) 0%, rgba(255, 77, 109, 0.02) 100%);
+    border-top-color: #ff4d6d;
+    box-shadow: 0 -4px 15px rgba(255, 77, 109, 0.25);
+  }
+  100% {
+    top: -10%;
+    transform: translateY(0);
+  }
+}

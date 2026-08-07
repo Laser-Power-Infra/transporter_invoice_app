@@ -548,9 +548,22 @@
                 </div>
                 
                 <div class="pdf-dropzone" id="pdf-upload-dropzone">
+                  <div class="scanner-line"></div>
                   <i data-lucide="upload-cloud" class="dropzone-icon"></i>
                   <p>Drag and drop invoice PDF here or click to browse</p>
                   <span>Supports PDF files up to 10MB</span>
+                  
+                  <!-- Agentic AI Wave Animation -->
+                  <div class="agentic-wave-container" id="agentic-wave-loader">
+                    <div class="radar-scanner">
+                      <div class="radar-circle"></div>
+                      <div class="radar-circle"></div>
+                      <div class="radar-circle"></div>
+                      <div class="radar-core"></div>
+                    </div>
+                    <div class="agentic-status-text" id="agentic-status-label">Initializing AI Auditor...</div>
+                  </div>
+                  
                   <input type="file" id="pdf-file-input" accept="application/pdf" style="display: none;">
                 </div>
               </form>
