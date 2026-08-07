@@ -169,6 +169,7 @@ function initApp() {
   initDetailModalTabs();
   initAuthActions();
   initExportAndSelection();
+  initAgentNotificationPolling();
 
   // Check auth
   const isAuthed = checkAuth();
@@ -2086,6 +2087,76 @@ function initExportAndSelection() {
 }
 window.initExportAndSelection = initExportAndSelection;
 
+// ---------- Agent Webhook Notifications Polling ----------
+let lastSeenNotificationId = null;
+
+function initAgentNotificationPolling() {
+  const closeBtn = document.getElementById('agent-notification-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      const banner = document.getElementById('agent-notification-banner');
+      if (banner) banner.style.display = 'none';
+    });
+  }
+
+  // Initial poll
+  pollAgentNotification();
+
+  // Periodic poll every 4 seconds
+  setInterval(pollAgentNotification, 4000);
+}
+window.initAgentNotificationPolling = initAgentNotificationPolling;
+
+async function pollAgentNotification() {
+  try {
+    const resp = await fetch(`${SERVER_BASE_URL}/api/agent-notification`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.success && data.notification) {
+      const note = data.notification;
+      if (note.id !== lastSeenNotificationId) {
+        lastSeenNotificationId = note.id;
+        showAgentNotificationToggle(note.type, note.message);
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to poll agent notification:', e);
+  }
+}
+
+function showAgentNotificationToggle(type, message) {
+  const banner = document.getElementById('agent-notification-banner');
+  const msgEl = document.getElementById('agent-notification-message');
+  const iconContainer = document.getElementById('agent-notification-icon-container');
+  
+  if (!banner || !msgEl || !iconContainer) return;
+  
+  msgEl.textContent = message;
+  
+  // Set style and icon based on type
+  if (type === 'error') {
+    banner.style.backgroundColor = 'rgba(255, 77, 109, 0.1)';
+    banner.style.border = '1px solid #ff4d6d';
+    banner.style.color = '#ff4d6d';
+    iconContainer.innerHTML = '<i data-lucide="alert-triangle" style="width: 20px; height: 20px;"></i>';
+  } else {
+    banner.style.backgroundColor = 'rgba(46, 213, 115, 0.1)';
+    banner.style.border = '1px solid #2ed573';
+    banner.style.color = '#2ed573';
+    iconContainer.innerHTML = '<i data-lucide="check-circle" style="width: 20px; height: 20px;"></i>';
+  }
+  
+  banner.style.display = 'flex';
+  
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons({
+      attrs: { class: 'lucide' },
+      nameAttr: 'data-lucide'
+    });
+  }
+}
+window.showAgentNotificationToggle = showAgentNotificationToggle;
+
 // ----------------- LEDGERS RENDERERS -----------------
 const sortByUploadDate = (arr) => {
   return [...arr].sort((a, b) => {
@@ -3392,7 +3463,7 @@ function buildInvoiceDetailsView(invoice, groupRecords) {
     { label: "Billing Item", key: "item_name", value: invoice.item_name, editable: true, type: "text" },
     { label: "Party Registration Address", key: "party_reg_addr", value: invoice.party_reg_addr, editable: true, type: "text" },
     { label: "Our Registration Address", key: "our_reg_addr", value: invoice.our_reg_addr, editable: true, type: "text" },
-    { label: "Service Account Code", key: "service_acc_code", value: invoice.service_acc_code, editable: true, type: "text" },
+    // { label: "Service Account Code", key: "service_acc_code", value: invoice.service_acc_code, editable: true, type: "text" },
     { label: "SAC Code", key: "sac_code", value: invoice.sac_code, editable: true, type: "text" },
     { label: "CGST", key: "cgst", value: invoice.cgst, editable: true, type: "number" },
     { label: "SGST", key: "sgst", value: invoice.sgst, editable: true, type: "number" },

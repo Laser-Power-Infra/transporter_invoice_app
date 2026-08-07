@@ -146,6 +146,15 @@
         </div>
       </header>
 
+      <!-- Agent Notification Banner -->
+      <div id="agent-notification-banner" style="display: none; padding: 12px 24px; margin: 16px 24px 0 24px; border-radius: 8px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); z-index: 999; animation: slideDown 0.3s ease;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span id="agent-notification-icon-container" style="display: flex; align-items: center; justify-content: center;"></span>
+          <span id="agent-notification-message"></span>
+        </div>
+        <button id="agent-notification-close" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: inherit; padding: 0 4px; line-height: 1;">&times;</button>
+      </div>
+
       <!-- Dashboard View -->
       <section id="tab-dashboard" class="tab-content active">
         <div class="dashboard-header">
